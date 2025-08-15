@@ -14,9 +14,6 @@ import threading
 from flask import request
 from aplicacion import main as run_update   # ✅
 
-ny_tz = pytz.timezone("America/New_York")
-hora_ny = datetime.now(ny_tz).strftime("%H:%M:%S")
-
 
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
@@ -213,7 +210,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
-    hora = datetime.now().strftime("%H:%M:%S")
+    ny_tz = pytz.timezone("America/New_York")
+    hora = datetime.now(ny_tz).strftime("%H:%M:%S")
+
 
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
