@@ -238,6 +238,10 @@ print(f"[debug] UTC={_now_utc.strftime('%Y-%m-%d %H:%M:%S')} | NY={_now_ny.strft
                     fmt_entero_miles(v_call), fmt_entero_miles(v_put),
                     pct_str(pct_c), pct_str(pct_p),
                     color_oi, color_vol, pct_str(fuerza), color_final])
+   # Debug visible en la hoja para comparar
+   ws.update(values=[["DEBUG_UTC", _now_utc.strftime("%Y-%m-%d %H:%M:%S")],
+                  ["DEBUG_NY",  _now_ny.strftime("%Y-%m-%d %H:%M:%S")]],
+          range_name="N1:O2")
 
 
     for tk in TICKERS:
