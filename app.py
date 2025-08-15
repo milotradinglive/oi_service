@@ -1,6 +1,7 @@
 # app.py
 import os, time, json, traceback
 from datetime import datetime, timedelta, timezone
+import pytz
 from collections import defaultdict
 
 from flask import Flask, jsonify, request    # ✅
@@ -12,6 +13,10 @@ from googleapiclient.errors import HttpError
 import threading
 from flask import request
 from aplicacion import main as run_update   # ✅
+
+ny_tz = pytz.timezone("America/New_York")
+hora_ny = datetime.now(ny_tz).strftime("%H:%M:%S")
+
 
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
