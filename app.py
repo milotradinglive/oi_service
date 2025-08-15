@@ -9,6 +9,9 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import threading
+from flask import request
+
 
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
@@ -399,6 +402,50 @@ def run_once():
 
 # ========= Flask app =========
 app = Flask(__name__)
+# === Seguridad opcional con token (puedes definir OI_SECRET en Render) ===
+import os
+OI_SECRET = os.getenv("OI_SECRET", "").strip()
+
+def _authorized(req: request) -> bool:
+    if not OI_SECRET:
+        return True
+    return req.headers.get("X-Auth-Token", "") == OI_SECRET
+
+# === Candado para evitar solapes de ejecuciones (/update cada 5 min) ===
+_update_lock = threading.Lock()
+_is_running = False
+
+def _run_guarded():
+    """
+    Llama a tu rutina real de actualización dentro de un candado para que
+    no se solapen ejecuciones si el cron vuelve a disparar antes de terminar.
+    """
+    global _is_running
+    try:
+        with _update_lock:
+            if _is_running:
+                print("⏳ [/update] Ya hay una ejecución en curso; se omite.", flush=True)
+                return
+            _is_running = True
+
+        # ======= 👉👉👉 CAMBIA SOLO ESTA LÍNEA POR TU FUNCIÓN REAL 👈👈👈 =======
+        # Ejemplos:
+        # from actualizar_oi_milo_todo import main as run_update
+        # run_update()
+        # o si tu lógica ya está en este archivo en una función, llámala aquí:
+        # actualizar_todo()
+        print("🚀 [update] Inicio actualización OI", flush=True)
+        # TODO: llama aquí a tu rutina REAL de actualización (la que hoy corres con F5)
+        print("✅ [update] Fin actualización OI", flush=True)
+        # ======= FIN DE LA ZONA A CAMBIAR =======
+
+    except Exception as e:
+        print(f"❌ [/update] Error: {repr(e)}", flush=True)
+    finally:
+        _is_running = False
+        from datetime import datetime
+        print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
+
 
 @app.get("/")
 def root():
@@ -407,6 +454,17 @@ def root():
 @app.get("/healthz")
 def healthz():
     return "ok", 200
+@app.route("/update", methods=["GET", "POST"])
+def update():
+    if not _authorized(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    # Lanza la actualización en segundo plano y responde rápido al cron
+    t = threading.Thread(target=_run_guarded, daemon=True)
+    t.start()
+
+    from datetime import datetime
+    return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z"}), 202
 
 @app.get("/run")
 def http_run():
