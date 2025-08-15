@@ -208,6 +208,17 @@ def obtener_dinero(ticker, posicion_fecha=0):
 
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
+    # == Hora NY y UTC calculadas de forma inequívoca ==
+import pytz as _pytz
+_now_utc = datetime.utcnow().replace(tzinfo=_pytz.utc)
+_ny = _pytz.timezone("America/New_York")
+_now_ny = _now_utc.astimezone(_ny)
+
+# Hora para columna B: como TEXTO para que Sheets NO la convierta
+hora_texto_ny = "'" + _now_ny.strftime("%H:%M:%S") + " ET"
+
+print(f"[debug] UTC={_now_utc.strftime('%Y-%m-%d %H:%M:%S')} | NY={_now_ny.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
 
