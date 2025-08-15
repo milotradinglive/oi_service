@@ -210,8 +210,23 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
+
+    # ➜ Hora de New York como TEXTO para que Sheets no convierta
     ny_tz = pytz.timezone("America/New_York")
-    hora = datetime.now(ny_tz).strftime("%H:%M:%S")
+    hora = "'" + datetime.now(ny_tz).strftime("%H:%M:%S") + " ET"
+
+    for tk in TICKERS:
+        oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
+        datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
+        datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
+        time.sleep(0.15)
+
+    ...
+    resumen.append([exp, hora, tk,
+                    fmt_millones(m_call), fmt_millones(m_put),
+                    fmt_entero_miles(v_call), fmt_entero_miles(v_put),
+                    pct_str(pct_c), pct_str(pct_p),
+                    color_oi, color_vol, pct_str(fuerza), color_final])
 
 
     for tk in TICKERS:
