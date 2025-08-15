@@ -3,8 +3,7 @@ import os, time, json, traceback
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
-from flask import Flask, jsonify
-import requests
+from flask import Flask, jsonify, requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
@@ -405,7 +404,6 @@ def run_once():
 # ========= Flask app =========
 app = Flask(__name__)
 # === Seguridad opcional con token (puedes definir OI_SECRET en Render) ===
-import os
 OI_SECRET = os.getenv("OI_SECRET", "").strip()
 
 def _authorized(req: request) -> bool:
@@ -437,8 +435,8 @@ def _run_guarded():
         # o si tu lógica ya está en este archivo en una función, llámala aquí:
         # actualizar_todo()
         print("🚀 [update] Inicio actualización OI", flush=True)
-          run_update()
-          print("✅ [update] Fin actualización OI", flush=True)
+        run_update()
+        print("✅ [update] Fin actualización OI", flush=True)
 
         # ======= FIN DE LA ZONA A CAMBIAR =======
 
