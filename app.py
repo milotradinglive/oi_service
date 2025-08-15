@@ -11,6 +11,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import threading
 from flask import request
+from aplicación import main as run_update
+
 
 
 # ========= Config =========
@@ -435,8 +437,9 @@ def _run_guarded():
         # o si tu lógica ya está en este archivo en una función, llámala aquí:
         # actualizar_todo()
         print("🚀 [update] Inicio actualización OI", flush=True)
-        # TODO: llama aquí a tu rutina REAL de actualización (la que hoy corres con F5)
-        print("✅ [update] Fin actualización OI", flush=True)
+          run_update()
+          print("✅ [update] Fin actualización OI", flush=True)
+
         # ======= FIN DE LA ZONA A CAMBIAR =======
 
     except Exception as e:
