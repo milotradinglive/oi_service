@@ -5,13 +5,13 @@ from collections import defaultdict
 
 from flask import Flask, jsonify, request    # ✅
 import requests                              # ✅
-import gspread
+import threading
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import threading
 from flask import request
-from aplicacion import main as run_update
+from aplicacion import main as run_update   # ✅
 
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
