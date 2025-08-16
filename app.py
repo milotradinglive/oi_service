@@ -386,7 +386,7 @@ def procesar_autorizados(accesos_doc, main_file_url):
 def run_once():
     doc_main  = client.open_by_key(MAIN_FILE_ID)
     accesos   = client.open_by_key(ACCESS_FILE_ID)
-    main_url  = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
+    main_url  = f"https://docs.google.com/spreadsheets/d/1DlwiPxbgDWAQmM_7n5MRi2Ms4YRas5SYKsteXYHD3Ks/edit"
 
     actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
     actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
