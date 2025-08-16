@@ -21,7 +21,7 @@ MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID",   "1DlwiPxbgDWAQmM_7n5MRi2Ms4YRas5SYK
 ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1ZwLVuinFA1sBprPMWVliu_nwdr1mlmav6FJ-zQm2FlE")  # usa otro ID si tu hoja de accesos es distinta
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
 
-TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN",  "LGFG3UgaSG6y6GwoXhrBGKGnK5Vk")  # <- ponlo en env/secret
+TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN",)  # <- ponlo en env/secret
 
 # ========= Auth desde variable de entorno =========
 def make_gspread_and_creds():
@@ -341,13 +341,10 @@ def procesar_autorizados(accesos_doc, main_file_url):
         now_utc = datetime.now(timezone.utc)
 
         # CORRECCIÓN: tomar el email de la service account correctamente
-        sa_email = _creds_info.service_account_email if hasattr(_creds_info, "service_account_email") else ""
-        if not sa_email:
-            # Compatibilidad por si cambia la estructura del objeto
-            try:
-                sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","").lower()
-            except:
-                sa_email = ""
+        # reemplaza ese bloque por esta línea:
+          sa_email = (_creds_info.get("client_email") or "").lower()
+
+
 
         for i, raw in enumerate(rows[1:], start=2):
             row = (raw + [""]*8)[:8]
