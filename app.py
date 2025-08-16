@@ -468,7 +468,7 @@ def _run_guarded():
         # o si tu lógica ya está en este archivo en una función, llámala aquí:
         # actualizar_todo()
         print("🚀 [update] Inicio actualización OI", flush=True)
-        run_update()
+        run_once()
         print("✅ [update] Fin actualización OI", flush=True)
 
         # ======= FIN DE LA ZONA A CAMBIAR =======
