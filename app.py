@@ -18,7 +18,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
 
 # IDs por entorno (defaults para STAGING)
 MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID",   "1DlwiPxbgDWAQmM_7n5MRi2Ms4YRas5SYKsteXYHD3Ks")
-ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1DlwiPxbgDWAQmM_7n5MRi2Ms4YRas5SYKsteXYHD3Ks")  # usa otro ID si tu hoja de accesos es distinta
+ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1ZwLVuinFA1sBprPMWVliu_nwdr1mlmav6FJ-zQm2FlE")  # usa otro ID si tu hoja de accesos es distinta
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
 
 TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN",  "REEMPLAZA_CON_TU_TOKEN")  # <- ponlo en env/secret
