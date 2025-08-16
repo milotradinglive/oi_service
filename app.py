@@ -3,6 +3,7 @@ import os, time, json, traceback
 from datetime import datetime, timedelta, timezone
 import pytz
 from collections import defaultdict
+import gspread
 
 from flask import Flask, jsonify, request    # ✅
 import requests                              # ✅
@@ -209,15 +210,16 @@ def obtener_dinero(ticker, posicion_fecha=0):
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
 
-    # === Hora NY y UTC, inequívocas ===
+    # === Hora NY y UTC (inequívocas) ===
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
-    # Hora como TEXTO para que Sheets no convierta
-    hora_txt = "'" + now_ny.strftime("%H:%M:%S") + " ET"
+    # Fecha y Hora (Hora como TEXTO para que Sheets NO la convierta)
+    fecha_txt = f"{now_ny:%Y-%m-%d}"
+    hora_txt  = "'" + now_ny.strftime("%H:%M:%S") + " ET"
 
-    # Debug en logs y en la hoja (para que verifiques diferencia UTC vs NY)
+    # Debug en logs y en la hoja
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     ws.update(
         values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
@@ -227,8 +229,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
-
-    # (BORRAR DUPLICADOS) >>> NO recalcules ny_tz ni 'hora' más abajo
 
     # --- Recolecta datos por ticker ---
     for tk in TICKERS:
@@ -250,6 +250,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
         exp = agg[tk]["EXP"] or "-"
+
         total_m = m_call + m_put
         if total_m == 0:
             pct_c = pct_p = fuerza = 0.0
@@ -273,11 +274,10 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")): color_final = "🟢🔴"
         else: color_final = "⚪"
 
-        # OJO: primera columna de tu hoja se llama "Fecha", pero aquí pones 'exp' (vencimiento).
-        # Si quieres la fecha de hoy, cambia 'exp' por f"{now_ny:%Y-%m-%d}".
+        # "Fecha" = fecha actual de NY; "Hora" = hora ET como texto
         resumen.append([
-            exp,                # Fecha (o cámbialo por f"{now_ny:%Y-%m-%d}")
-            hora_txt,           # Hora NY como texto
+            fecha_txt,          # Fecha (NY)
+            hora_txt,           # Hora (NY, texto 'HH:MM:SS ET')
             tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
@@ -285,6 +285,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             color_oi, color_vol, pct_str(fuerza), color_final
         ])
 
+    # --- Escribe encabezado y cuerpo ---
     encabezado = [[
         "Fecha","Hora","Ticker",
         "RELATIVE VERDE","RELATIVE ROJO",
