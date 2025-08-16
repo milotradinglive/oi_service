@@ -209,53 +209,35 @@ def obtener_dinero(ticker, posicion_fecha=0):
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
 
-    # == Hora NY y UTC calculadas de forma inequívoca ==
+    # === Hora NY y UTC, inequívocas ===
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
-    ny_tz = pytz.timezone("America/New_York")
-    now_ny = now_utc.astimezone(ny_tz)
+    ny_tz   = pytz.timezone("America/New_York")
+    now_ny  = now_utc.astimezone(ny_tz)
 
-    # Hora para columna B como TEXTO (Sheets no la convierte)
-    hora = "'" + now_ny.strftime("%H:%M:%S") + " ET"
+    # Hora como TEXTO para que Sheets no convierta
+    hora_txt = "'" + now_ny.strftime("%H:%M:%S") + " ET"
 
-    # Debug visible en logs y en hoja
-    print(f"[debug] UTC={now_utc.strftime('%Y-%m-%d %H:%M:%S')} | NY={now_ny.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    # Debug en logs y en la hoja (para que verifiques diferencia UTC vs NY)
+    print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     ws.update(
-        values=[["DEBUG_UTC", now_utc.strftime("%Y-%m-%d %H:%M:%S")],
-                ["DEBUG_NY",  now_ny.strftime("%Y-%m-%d %H:%M:%S")]],
+        values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
+                ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
         range_name="N1:O2"
     )
 
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
 
-    # ➜ Hora de New York como TEXTO para que Sheets no convierta
-    ny_tz = pytz.timezone("America/New_York")
-    hora = "'" + datetime.now(ny_tz).strftime("%H:%M:%S") + " ET"
+    # (BORRAR DUPLICADOS) >>> NO recalcules ny_tz ni 'hora' más abajo
 
+    # --- Recolecta datos por ticker ---
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
         datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    ...
-    resumen.append([exp, hora, tk,
-                    fmt_millones(m_call), fmt_millones(m_put),
-                    fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-                    pct_str(pct_c), pct_str(pct_p),
-                    color_oi, color_vol, pct_str(fuerza), color_final])
-   # Debug visible en la hoja para comparar
-   ws.update(values=[["DEBUG_UTC", _now_utc.strftime("%Y-%m-%d %H:%M:%S")],
-                  ["DEBUG_NY",  _now_ny.strftime("%Y-%m-%d %H:%M:%S")]],
-          range_name="N1:O2")
-
-
-    for tk in TICKERS:
-        oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
-        datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
-        datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
-        time.sleep(0.15)
-
+    # --- Agrega por ticker ---
     from collections import defaultdict as _dd
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
@@ -263,6 +245,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
+    # --- Construye filas finales ---
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
@@ -285,16 +268,22 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
         color_oi  = "🟢" if fuerza >= 20 else "🔴" if fuerza <= -20 else "⚪"
         color_vol = "🟢" if fuerza_vol >= 20 else "🔴" if fuerza_vol <= -20 else "⚪"
-        if color_oi == "🟢" and color_vol == "🟢": color_final = "🟢🟢"
+        if color_oi == "🟢" and color_vol == "🟢":   color_final = "🟢🟢"
         elif color_oi == "🔴" and color_vol == "🔴": color_final = "🔴🔴"
         elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")): color_final = "🟢🔴"
         else: color_final = "⚪"
 
-        resumen.append([exp, hora, tk,
-                        fmt_millones(m_call), fmt_millones(m_put),
-                        fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-                        pct_str(pct_c), pct_str(pct_p),
-                        color_oi, color_vol, pct_str(fuerza), color_final])
+        # OJO: primera columna de tu hoja se llama "Fecha", pero aquí pones 'exp' (vencimiento).
+        # Si quieres la fecha de hoy, cambia 'exp' por f"{now_ny:%Y-%m-%d}".
+        resumen.append([
+            exp,                # Fecha (o cámbialo por f"{now_ny:%Y-%m-%d}")
+            hora_txt,           # Hora NY como texto
+            tk,
+            fmt_millones(m_call), fmt_millones(m_put),
+            fmt_entero_miles(v_call), fmt_entero_miles(v_put),
+            pct_str(pct_c), pct_str(pct_p),
+            color_oi, color_vol, pct_str(fuerza), color_final
+        ])
 
     encabezado = [[
         "Fecha","Hora","Ticker",
@@ -307,10 +296,14 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws.batch_clear(["A2:M1000"])
 
     def fuerza_to_float(s):
-        try: return float(s.replace("%","").replace(",", "."))
-        except: return -9999.0
+        try:
+            return float(s.replace("%","").replace(",", "."))
+        except:
+            return -9999.0
+
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     ws.update(values=resumen, range_name=f"A2:M{len(resumen)+1}")
+
 
 # ===== AUTORIZADOS (modo idempotente básico con grupos ya compartidos) =====
 def _parse_duration(txt):
