@@ -340,11 +340,15 @@ def procesar_autorizados(accesos_doc, main_file_url):
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
-        # CORRECCIÓN: tomar el email de la service account correctamente
-        # reemplaza ese bloque por esta línea:
-          sa_email = (_creds_info.get("client_email") or "").lower()
-
-
+                # CORRECCIÓN: tomar el email de la service account correctamente
+        sa_email = ""
+        if hasattr(_creds_info, "service_account_email"):
+            sa_email = _creds_info.service_account_email
+        else:
+            try:
+                sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","").lower()
+            except:
+                sa_email = ""
 
         for i, raw in enumerate(rows[1:], start=2):
             row = (raw + [""]*8)[:8]
