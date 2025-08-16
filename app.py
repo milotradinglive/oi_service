@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import threading
 from flask import request
-from aplicacion import main as run_update   # ✅
+
 
 
 # ========= Config =========
