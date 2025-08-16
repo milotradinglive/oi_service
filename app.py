@@ -2,29 +2,26 @@
 import os, time, json, traceback
 from datetime import datetime, timedelta, timezone
 import pytz
-from collections import defaultdict
-import gspread
-
-from flask import Flask, jsonify, request    # ✅
-import requests                              # ✅
 import threading
+from collections import defaultdict as _dd
+import gspread
+import requests
+
+from flask import Flask, jsonify, request
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import threading
-from flask import request
-
-
 
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 
-# IDs por entorno (lee de variables o usa defaults STAGING)
+# IDs por entorno (defaults para STAGING)
 MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID",   "1DlwiPxbgDWAQmM_7n5MRi2Ms4YRas5SYKsteXYHD3Ks")
 ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1ZwLVuinFA1sBprPMWVliu_nwdr1mlmav6FJ-zQm2FlE")
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
-TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN",  "REEMPLAZA_CON_TU_TOKEN")  # ← ¡ponlo en Secret Manager / env!
+
+TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN",  "REEMPLAZA_CON_TU_TOKEN")  # <- ponlo en env/secret
 
 # ========= Auth desde variable de entorno =========
 def make_gspread_and_creds():
@@ -36,20 +33,17 @@ def make_gspread_and_creds():
     legacy_creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, legacy_scopes)
     return gspread.authorize(legacy_creds), legacy_creds
 
+client, google_api_creds = make_gspread_and_creds()
+drive = build("drive", "v3", credentials=google_api_creds)  # (opcional; útil para debug/links)
 
-# Tickers (mismos que en tu script)
+# ========= Datos base =========
 TICKERS = [
     "AAPL","AMD","AMZN","BA","BAC","DIA","GLD","GOOGL","IBM","INTC",
     "IWM","JPM","META","MRNA","MSFT","NFLX","NVDA","NVTS","ORCL",
     "PLTR","QQQ","SLV","SNAP","SPY","TNA","TSLA","TSLL","USO","WFC","WMT","XOM","V"
 ]
-
 BASE_TRADIER = "https://api.tradier.com/v1"
 TIMEOUT = 12
-
-
-client, google_api_creds = make_gspread_and_creds()
-drive = build("drive", "v3", credentials=google_api_creds)
 
 # ========= Sesión HTTP Tradier =========
 session = requests.Session()
@@ -61,9 +55,8 @@ def get_json(url, params=None, max_retries=3):
             r = session.get(url, params=params, timeout=TIMEOUT)
             if r.status_code == 429:
                 espera = 2 * intento
-                print(f"⏳ 429 rate limit. Reintentando en {espera}s…")
-                time.sleep(espera)
-                continue
+                print(f"⏳ 429 rate limit. Reintento en {espera}s…")
+                time.sleep(espera); continue
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -91,8 +84,7 @@ from datetime import datetime as _dt, timedelta as _td
 def elegir_expiracion_viernes(expiraciones, posicion_fecha):
     hoy = _dt.now().date()
     dias_a_viernes = (4 - hoy.weekday()) % 7
-    if dias_a_viernes == 0:
-        dias_a_viernes = 7
+    if dias_a_viernes == 0: dias_a_viernes = 7
     proximo_viernes = hoy + _td(days=dias_a_viernes)
 
     fechas_viernes = []
@@ -101,11 +93,9 @@ def elegir_expiracion_viernes(expiraciones, posicion_fecha):
             dt = _dt.strptime(d, "%Y-%m-%d").date()
             if dt.weekday() == 4 and dt >= proximo_viernes:
                 fechas_viernes.append(dt)
-        except:
-            continue
+        except: continue
     fechas_viernes.sort()
-    if len(fechas_viernes) <= posicion_fecha:
-        return None
+    if len(fechas_viernes) <= posicion_fecha: return None
     return fechas_viernes[posicion_fecha].strftime("%Y-%m-%d")
 
 def obtener_dinero(ticker, posicion_fecha=0):
@@ -132,8 +122,7 @@ def obtener_dinero(ticker, posicion_fecha=0):
                 dt = _dt.strptime(d, "%Y-%m-%d").date()
                 if lunes_ref <= dt <= viernes_ref:
                     fechas_semana.append(dt)
-            except:
-                continue
+            except: continue
         fechas_semana.sort()
         fechas_a_sumar = [viernes_ref] if len(fechas_semana) == 1 else fechas_semana
 
@@ -151,16 +140,13 @@ def obtener_dinero(ticker, posicion_fecha=0):
             cj = get_json(f"{BASE_TRADIER}/markets/options/chains",
                           params={"symbol": ticker, "expiration": fecha_str, "greeks": "false"})
             opciones = cj.get("options", {}).get("option", []) or []
-            if isinstance(opciones, dict):
-                opciones = [opciones]
+            if isinstance(opciones, dict): opciones = [opciones]
 
             if precio <= 0 and opciones:
                 try:
                     under_px = float(opciones[0].get("underlying_price") or 0)
-                    if under_px > 0:
-                        precio = under_px
-                except:
-                    pass
+                    if under_px > 0: precio = under_px
+                except: pass
 
             strikes_itm_call = sorted([s for s in strikes if s < precio], reverse=True)[:10]
             strikes_otm_call = sorted([s for s in strikes if s > precio])[:10]
@@ -171,10 +157,8 @@ def obtener_dinero(ticker, posicion_fecha=0):
             set_put = set(strikes_itm_put + strikes_otm_put)
 
             for op in opciones:
-                try:
-                    strike = float(op.get("strike", 0))
-                except:
-                    continue
+                try: strike = float(op.get("strike", 0))
+                except: continue
                 typ = op.get("option_type")
                 oi  = int(op.get("open_interest") or 0)
                 vol = int(op.get("volume") or 0)
@@ -183,21 +167,18 @@ def obtener_dinero(ticker, posicion_fecha=0):
                 last_opt = float(op.get("last") or 0.0)
 
                 mid = 0.0
-                if bid > 0 and ask > 0:
-                    mid = (bid + ask) / 2
-                elif ask > 0:
-                    mid = ask
-                elif last_opt > 0:
-                    mid = last_opt
+                if bid > 0 and ask > 0:   mid = (bid + ask) / 2
+                elif ask > 0:             mid = ask
+                elif last_opt > 0:        mid = last_opt
 
                 if typ == "call" and strike in set_call:
-                    oi_call_total   += oi
+                    oi_call_total     += oi
                     dinero_call_total += oi * mid * 100
-                    vol_call_total  += vol
+                    vol_call_total    += vol
                 elif typ == "put" and strike in set_put:
-                    oi_put_total    += oi
+                    oi_put_total      += oi
                     dinero_put_total  += oi * mid * 100
-                    vol_put_total   += vol
+                    vol_put_total     += vol
 
         return (oi_call_total, oi_put_total,
                 round(dinero_call_total / 1_000_000, 1),
@@ -207,45 +188,42 @@ def obtener_dinero(ticker, posicion_fecha=0):
         print(f"❌ Error con {ticker}: {e}")
         return 0, 0, 0.0, 0.0, 0, 0, None
 
+# ========= Escritura en Google Sheets =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
 
-    # === Hora NY y UTC (inequívocas) ===
+    # Hora NY (derivada de UTC) inequívoca
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
-    # Fecha y Hora (Hora como TEXTO para que Sheets NO la convierta)
     fecha_txt = f"{now_ny:%Y-%m-%d}"
-    hora_txt  = "'" + now_ny.strftime("%H:%M:%S") + " ET"
+    hora_txt  = "'" + now_ny.strftime("%H:%M:%S") + " ET"   # texto para que Sheets no convierta
 
-    # Debug en logs y en la hoja
+    # Debug UTC/NY en hoja (N1:O2) y logs
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
-    ws.update(
-        values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
-                ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
-        range_name="N1:O2"
-    )
+    ws.update(values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
+                      ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
+              range_name="N1:O2")
 
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
 
-    # --- Recolecta datos por ticker ---
+    # Recolecta datos por ticker
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
         datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # --- Agrega por ticker ---
-    from collections import defaultdict as _dd
+    # Agrega por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
         agg[tk]["EXP"] = agg[tk]["EXP"] or exp
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # --- Construye filas finales ---
+    # Construye filas finales
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
@@ -274,10 +252,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")): color_final = "🟢🔴"
         else: color_final = "⚪"
 
-        # "Fecha" = fecha actual de NY; "Hora" = hora ET como texto
         resumen.append([
-            fecha_txt,          # Fecha (NY)
-            hora_txt,           # Hora (NY, texto 'HH:MM:SS ET')
+            fecha_txt,      # A: Fecha (NY)
+            hora_txt,       # B: Hora (NY, texto)
             tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
@@ -285,7 +262,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             color_oi, color_vol, pct_str(fuerza), color_final
         ])
 
-    # --- Escribe encabezado y cuerpo ---
+    # Escribe encabezado y cuerpo
     encabezado = [[
         "Fecha","Hora","Ticker",
         "RELATIVE VERDE","RELATIVE ROJO",
@@ -297,18 +274,14 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws.batch_clear(["A2:M1000"])
 
     def fuerza_to_float(s):
-        try:
-            return float(s.replace("%","").replace(",", "."))
-        except:
-            return -9999.0
+        try:    return float(s.replace("%","").replace(",", "."))
+        except: return -9999.0
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     ws.update(values=resumen, range_name=f"A2:M{len(resumen)+1}")
 
-
-# ===== AUTORIZADOS (modo idempotente básico con grupos ya compartidos) =====
+# ===== AUTORIZADOS (idempotente básico con grupos) =====
 def _parse_duration(txt):
-    # ejemplos: "24h", "3d", "1w"
     txt = (txt or "").strip().lower()
     if txt.endswith("h"): return timedelta(hours=int(txt[:-1] or 24))
     if txt.endswith("d"): return timedelta(days=int(txt[:-1] or 1))
@@ -327,18 +300,14 @@ def procesar_autorizados(accesos_doc, main_file_url):
         print("ℹ️ AUTORIZADOS vacío.")
         return {"activados": 0, "revocados": 0}
 
-    # Directory API (requiere Domain-Wide Delegation). Si no cuentas con DWD, este bloque seguirá sin error,
-    # solo marcará filas como ACTIVO/REVOCADO sin tocar grupos.
     try:
         from google.oauth2.service_account import Credentials as SACreds
-
         ADMIN_SUBJECT = os.getenv("ADMIN_SUBJECT", "admin@milotradinglive.com")
         SCOPES_DIR = [
             "https://www.googleapis.com/auth/admin.directory.group.member",
             "https://www.googleapis.com/auth/apps.groups.settings",
         ]
 
-        # >>>>> usa la MISMA credencial desde env <<<<<
         creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
         if not creds_json:
             raise RuntimeError("Falta GOOGLE_CREDENTIALS_JSON para Directory API")
@@ -366,7 +335,7 @@ def procesar_autorizados(accesos_doc, main_file_url):
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
-        sa_email = creds_info.get("client_email", "").lower()  # correo de la service account
+        sa_email = creds_info.get("client_email", "").lower()
 
         for i, raw in enumerate(rows[1:], start=2):
             row = (raw + [""]*8)[:8]
@@ -402,7 +371,6 @@ def procesar_autorizados(accesos_doc, main_file_url):
                     hoja_aut.update(values=[[f"ERROR_PARSE_EXP: {expira}"]], range_name=f"H{i}")
                     continue
                 if now_utc >= exp_dt:
-                    # (Opcional) quitar del grupo con directory.members().delete(...)
                     hoja_aut.update(values=[["REVOCADO"]], range_name=f"F{i}")
                     hoja_aut.update(values=[["Salida del grupo por vencimiento"]], range_name=f"H{i}")
                     revocados += 1
@@ -413,7 +381,6 @@ def procesar_autorizados(accesos_doc, main_file_url):
     except Exception as e:
         print(f"⚠️ procesar_autorizados sin Directory API: {e}")
         return {"activados": 0, "revocados": 0}
-
 
 # ========= Runner de UNA corrida =========
 def run_once():
@@ -436,23 +403,16 @@ def run_once():
 
 # ========= Flask app =========
 app = Flask(__name__)
-# === Seguridad opcional con token (puedes definir OI_SECRET en Render) ===
 OI_SECRET = os.getenv("OI_SECRET", "").strip()
 
 def _authorized(req: request) -> bool:
-    if not OI_SECRET:
-        return True
+    if not OI_SECRET: return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
 
-# === Candado para evitar solapes de ejecuciones (/update cada 5 min) ===
 _update_lock = threading.Lock()
 _is_running = False
 
 def _run_guarded():
-    """
-    Llama a tu rutina real de actualización dentro de un candado para que
-    no se solapen ejecuciones si el cron vuelve a disparar antes de terminar.
-    """
     global _is_running
     try:
         with _update_lock:
@@ -461,25 +421,15 @@ def _run_guarded():
                 return
             _is_running = True
 
-        # ======= 👉👉👉 CAMBIA SOLO ESTA LÍNEA POR TU FUNCIÓN REAL 👈👈👈 =======
-        # Ejemplos:
-        # from actualizar_oi_milo_todo import main as run_update
-        # run_update()
-        # o si tu lógica ya está en este archivo en una función, llámala aquí:
-        # actualizar_todo()
         print("🚀 [update] Inicio actualización OI", flush=True)
         run_once()
         print("✅ [update] Fin actualización OI", flush=True)
-
-        # ======= FIN DE LA ZONA A CAMBIAR =======
 
     except Exception as e:
         print(f"❌ [/update] Error: {repr(e)}", flush=True)
     finally:
         _is_running = False
-        from datetime import datetime
         print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
-
 
 @app.get("/")
 def root():
@@ -488,16 +438,13 @@ def root():
 @app.get("/healthz")
 def healthz():
     return "ok", 200
+
 @app.route("/update", methods=["GET", "POST"])
 def update():
     if not _authorized(request):
         return jsonify({"error": "unauthorized"}), 401
-
-    # Lanza la actualización en segundo plano y responde rápido al cron
     t = threading.Thread(target=_run_guarded, daemon=True)
     t.start()
-
-    from datetime import datetime
     return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z"}), 202
 
 @app.get("/run")
