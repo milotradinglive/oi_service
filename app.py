@@ -335,7 +335,7 @@ def procesar_autorizados(accesos_doc, main_file_url):
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
-        sa_email = creds_info.get("client_email", "").lower()
+        sa_email = creds_info.get("milo-bot@conexion-milo.iam.gserviceaccount.com", "").lower()
 
         for i, raw in enumerate(rows[1:], start=2):
             row = (raw + [""]*8)[:8]
