@@ -54,7 +54,7 @@ drive = build("drive", "v3", credentials=google_api_creds)  # (opcional; útil p
 
 # ========= Datos base =========
 TICKERS = [
-    "AAPL","AMD","AMZN","BA","BAC","DIA","GLD","GOOGL","IBM","INTC",
+    "AAPL","AMD","AMZN","BA","BAC","DIA","GLD","GOOG","IBM","INTC",
     "IWM","JPM","META","MRNA","MSFT","NFLX","NVDA","NVTS","ORCL",
     "PLTR","QQQ","SLV","SNAP","SPY","TNA","TSLA","TSLL","USO","WFC","WMT","XOM","V"
 ]
@@ -216,11 +216,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")   # texto para que Sheets no convierta
 
-    # Debug UTC/NY en hoja ("N1:O2") y logs
-    print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
-    ws.update(values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
-                  ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
-          range_name="N1:O2")
+    # Debug solo a logs (NO escribir en N/O)
+print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
 
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
@@ -295,6 +292,14 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     ws.update(values=resumen, range_name=f"A2:M{len(resumen)+1}")
+
+# Limpia completamente N y O en esta hoja
+try:
+    ws.batch_clear(["N:O"])
+except Exception as e:
+    print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
+
+
 
 # ===== AUTORIZADOS (idempotente básico con grupos) =====
 def _parse_duration(txt):
