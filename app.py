@@ -223,19 +223,39 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             "INTENCION","VOLUMEN","Fuerza","Relación"
         ]], range_name="A2:M2")
 
-    # Hora NY
+        # Hora NY
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
-    # A1 = última fecha de toma (YYYY-MM-DD)
+    # Fecha/hora de toma que usamos en las filas
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")
+
+    print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
+    print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
+
+    datos, resumen = [], []
+    for tk in TICKERS:
+        oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
+        datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
+        datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
+        time.sleep(0.15)
+
+    # === A1: fecha visible en la hoja ===
+    # Si es "Semana siguiente" muestra el viernes de referencia (exp); si no, hoy.
+    viernes_ref_global = next((row[4] for row in datos if row[4]), None)
+    if ws.title.strip().lower() == "semana siguiente" and viernes_ref_global:
+        a1_value = viernes_ref_global           # ej. 2025-08-22
+    else:
+        a1_value = fecha_txt                    # hoy (NY)
+
     try:
-        print(f"[OI] Hoja='{ws.title}' A1 <- {fecha_txt}", flush=True)
-        ws.update_cell(1, 1, fecha_txt)
+        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value}", flush=True)
+        ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
+
 
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
