@@ -292,19 +292,21 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     else:
         a1_value = fecha_txt
 
+    # A1: escribir la fecha (última expiración o viernes calculado)
     try:
-    print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})", flush=True)
-    ws.update_cell(1, 1, a1_value)
-except Exception as e:
-    print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
+        print(
+            f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})",
+            flush=True
+        )
+        ws.update_cell(1, 1, a1_value)
+    except Exception as e:
+        print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
-# Borra cualquier resto del encabezado en la fila 1 (B1:M1),
-# para que quede solo la fecha en A1.
-try:
-    ws.batch_clear(["B1:M1"])
-except Exception as e:
-    print(f"⚠️ No se pudo limpiar B1:M1 en {ws.title}: {e}")
-
+    # Limpiar cualquier encabezado viejo en la fila 1 (B1:M1)
+    try:
+        ws.batch_clear(["B1:M1"])
+    except Exception as e:
+        print(f"⚠️ No se pudo limpiar B1:M1 en {ws.title}: {e}")
 
     # --- agrega por ticker ---
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
