@@ -198,7 +198,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     now_ny  = now_utc.astimezone(ny_tz)
 
     fecha_txt = f"{now_ny:%Y-%m-%d}"
-    hora_txt  = "'" + now_ny.strftime("%H:%M:%S") + " ET"   # texto para que Sheets no convierta
+    hora_txt  = "'" + now_ny.strftime("%H:%M:%S")   # texto para que Sheets no convierta
 
     # Debug UTC/NY en hoja (N1:O2) y logs
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
