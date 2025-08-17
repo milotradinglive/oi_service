@@ -206,21 +206,38 @@ def obtener_dinero(ticker, posicion_fecha=0):
         return 0, 0, 0.0, 0.0, 0, 0, None
 
 # ========= Escritura en Google Sheets (OI) =========
+from gspread.exceptions import WorksheetNotFound
+
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
-    ws = doc.worksheet(sheet_title)
+    # Abre o crea la hoja si no existe
+    try:
+        ws = doc.worksheet(sheet_title)
+    except WorksheetNotFound:
+        ws = doc.add_worksheet(title=sheet_title, rows=1000, cols=15)
+        # encabezado de una para hojas nuevas
+        ws.update(values=[[
+            "Fecha","Hora","Ticker",
+            "RELATIVE VERDE","RELATIVE ROJO",
+            "VOLUMEN ENTRA","VOLUMEN SALE",
+            "%SUBIDA","%BAJADA",
+            "INTENCION","VOLUMEN","Fuerza","Relación"
+        ]], range_name="A2:M2")
 
     # Hora NY
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
-    # ⬅️ Última fecha de toma en A1 (YYYY-MM-DD)
+    # A1 = última fecha de toma (no tocar después)
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")
-    ws.update_cell(1, 1, fecha_txt)
+    try:
+        ws.update_cell(1, 1, fecha_txt)
+    except Exception as e:
+        print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
-    print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
+    print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
     datos, resumen = [], []
 
@@ -653,10 +670,13 @@ def update():
 @app.get("/run")
 def http_run():
     try:
+        print("➡️  [/run] inicio", flush=True)
         result = run_once()
+        print(f"✅ [/run] ok: {result}", flush=True)
         return jsonify(result), 200
     except Exception as e:
         traceback.print_exc()
+        print(f"❌ [/run] error: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
