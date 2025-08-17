@@ -295,6 +295,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     try:
         print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
+    ry:
+    # borra cualquier resto de encabezado en la fila 1
+    ws.batch_clear(["B1:M1"])
+    except Exception as e:
+    print(f"⚠️ No se pudo limpiar B1:M1 en {ws.title}: {e}")
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
