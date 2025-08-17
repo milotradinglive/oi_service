@@ -270,12 +270,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
          # === A1: fecha visible en la hoja ===
     # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
     exp_dates = []
-    for _, _, _, _, exp, _ in datos:
-        if exp:
-            try:
-                exp_dates.append(_dt.strptime(exp, "%Y-%m-%d").date())
-            except:
-                pass
+    exp_dates = []
+for _, _, _, _, exp_vto, _ in datos:
+    if exp_vto:
+        try:
+            exp_dates.append(_dt.strptime(exp_vto, "%Y-%m-%d").date())
+        except:
+            pass
     ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
     def _calc_friday_from_today(pos_index: int) -> str:
@@ -311,8 +312,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
-        exp = agg[tk]["EXP"] or "-"
-
+       
         total_m = m_call + m_put
         if total_m == 0:
             pct_c = pct_p = fuerza = 0.0
@@ -336,17 +336,17 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")): color_final = "🟢🔴"
         else: color_final = "⚪"
 
-# Usa la expiración que efectivamente se usó para este ticker;
-# si por alguna razón no vino, cae al valor escrito en A1, y luego a la fecha actual.
-exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
+    # Usa la expiración que efectivamente se usó para este ticker;
+    # si por alguna razón no vino, cae al valor escrito en A1, y luego a la fecha actual.
+    exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-resumen.append([
-    exp_fila, hora_txt, tk,
-    fmt_millones(m_call), fmt_millones(m_put),
-    fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-    pct_str(pct_c), pct_str(pct_p),
-    color_oi, color_vol, pct_str(fuerza), color_final
-])
+    resumen.append([
+        exp_fila, hora_txt, tk,
+        fmt_millones(m_call), fmt_millones(m_put),
+        fmt_entero_miles(v_call), fmt_entero_miles(v_put),
+        pct_str(pct_c), pct_str(pct_p),
+        color_oi, color_vol, pct_str(fuerza), color_final
+    ])
 
     # Encabezado en fila 2 y cuerpo desde fila 3 (preservando A1)
     encabezado = [[
