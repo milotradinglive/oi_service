@@ -7,6 +7,7 @@ from collections import defaultdict as _dd
 import gspread
 import requests
 import re
+import fcntl  
 
 from flask import Flask, jsonify, request
 from oauth2client.service_account import ServiceAccountCredentials
@@ -39,6 +40,30 @@ ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1ZwLVuinFA1sBprPMWVliu_nwdr1mlmav6
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
 
 TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN", "")
+
+# ====== Lock inter-proceso (para evitar /run y /update simultáneos) ======
+LOCK_FILE = "/tmp/oi-updater.lock"
+
+def _acquire_lock():
+    """
+    Intenta tomar un candado de archivo no bloqueante.
+    Devuelve el file handle si lo obtiene, o None si ya hay otra ejecución corriendo.
+    """
+    f = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Opcional: escribir el PID para debug
+        try:
+            f.truncate(0)
+            f.write(str(os.getpid()))
+            f.flush()
+        except Exception:
+            pass
+        return f
+    except BlockingIOError:
+        f.close()
+        return None
+
 
 # ========= Auth desde variable de entorno =========
 def make_gspread_and_creds():
