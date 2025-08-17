@@ -231,6 +231,7 @@ def obtener_dinero(ticker, posicion_fecha=0):
 
 # ========= Escritura en Google Sheets (OI) =========
 from gspread.exceptions import WorksheetNotFound
+from datetime import datetime as _dt, timedelta as _td
 
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # Abre o crea la hoja si no existe
@@ -238,7 +239,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         ws = doc.worksheet(sheet_title)
     except WorksheetNotFound:
         ws = doc.add_worksheet(title=sheet_title, rows=1000, cols=15)
-        # encabezado fijo en la fila 2
         ws.update(values=[[
             "Fecha","Hora","Ticker",
             "RELATIVE VERDE","RELATIVE ROJO",
@@ -252,31 +252,29 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
-    # Fecha/hora de toma para las filas
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")
 
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
-    # --- recolecta datos de OI (una sola vez) ---
-    datos, resumen = [], []
+    # --- recolecta datos de OI ---
+    datos = []
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
         datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-     # === A1: fecha visible en la hoja ===
-     # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
-     exp_dates = []
-     for _, _, _, _, exp_vto, _ in datos:
-         if exp_vto:
+    # === A1: fecha visible en la hoja ===
+    # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
+    exp_dates = []
+    for _, _, _, _, exp_vto, _ in datos:
+        if exp_vto:
             try:
                 exp_dates.append(_dt.strptime(exp_vto, "%Y-%m-%d").date())
             except:
                 pass
-
     ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
     def _calc_friday_from_today(pos_index: int) -> str:
@@ -290,7 +288,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     title_norm = ws.title.strip().lower()
     if title_norm in ("semana actual", "semana siguiente"):
-        # Usa el último día de OI visto para ESTA hoja; si no hay, cae al viernes calculado
         a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
     else:
         a1_value = fecha_txt
@@ -301,41 +298,58 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
-
     # --- agrega por ticker ---
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
-        agg[tk]["EXP"] = agg[tk]["EXP"] or exp
+        if not agg[tk]["EXP"] and exp:
+            agg[tk]["EXP"] = exp
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
+    resumen = []
     for tk in sorted(agg.keys()):
-    m_call, v_call = agg[tk]["CALL"]
-    m_put,  v_put  = agg[tk]["PUT"]
-    ...
-    if color_oi == "🟢" and color_vol == "🟢":
-        color_final = "🟢🟢"
-    elif color_oi == "🔴" and color_vol == "🔴":
-        color_final = "🔴🔴"
-    elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")):
-        color_final = "🟢🔴"
-    else:
-        color_final = "⚪"
+        m_call, v_call = agg[tk]["CALL"]
+        m_put,  v_put  = agg[tk]["PUT"]
 
-    # Usa la expiración que efectivamente se usó para este ticker;
-    # si por alguna razón no vino, cae al valor escrito en A1, y luego a la fecha actual.
-    exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
+        total_m = m_call + m_put
+        if total_m == 0:
+            pct_c = pct_p = fuerza = 0.0
+        else:
+            pct_c = round(100 * m_call / total_m, 1)
+            pct_p = round(100 - pct_c, 1)
+            fuerza = pct_c if pct_c > pct_p else -pct_p
 
-    resumen.append([
-        exp_fila, hora_txt, tk,
-        fmt_millones(m_call), fmt_millones(m_put),
-        fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-        pct_str(pct_c), pct_str(pct_p),
-        color_oi, color_vol, pct_str(fuerza), color_final
-    ])
+        total_vol = v_call + v_put
+        if total_vol == 0:
+            pct_vc = pct_vp = fuerza_vol = 0.0
+        else:
+            pct_vc = round(100 * v_call / total_vol, 1)
+            pct_vp = round(100 - pct_vc, 1)
+            fuerza_vol = pct_vc if pct_vc > pct_vp else -pct_vp
 
+        color_oi  = "🟢" if fuerza >= 20 else "🔴" if fuerza <= -20 else "⚪"
+        color_vol = "🟢" if fuerza_vol >= 20 else "🔴" if fuerza_vol <= -20 else "⚪"
+        if color_oi == "🟢" and color_vol == "🟢":
+            color_final = "🟢🟢"
+        elif color_oi == "🔴" and color_vol == "🔴":
+            color_final = "🔴🔴"
+        elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")):
+            color_final = "🟢🔴"
+        else:
+            color_final = "⚪"
 
-    # Encabezado en fila 2 y cuerpo desde fila 3 (preservando A1)
+        # Fecha por fila = expiración usada para ese ticker (fallback a A1 y luego a la fecha de hoy)
+        exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
+
+        resumen.append([
+            exp_fila, hora_txt, tk,
+            fmt_millones(m_call), fmt_millones(m_put),
+            fmt_entero_miles(v_call), fmt_entero_miles(v_put),
+            pct_str(pct_c), pct_str(pct_p),
+            color_oi, color_vol, pct_str(fuerza), color_final
+        ])
+
+    # Encabezado + cuerpo
     encabezado = [[
         "Fecha","Hora","Ticker",
         "RELATIVE VERDE","RELATIVE ROJO",
@@ -347,8 +361,10 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws.batch_clear(["A3:M1000"])
 
     def fuerza_to_float(s):
-        try:    return float(s.replace("%","").replace(",", "."))
-        except: return -9999.0
+        try:
+            return float(s.replace("%","").replace(",", "."))
+        except:
+            return -9999.0
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     if resumen:
@@ -358,8 +374,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         ws.batch_clear(["N:O"])
     except Exception as e:
         print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
-
-
 
 # ========= ACCESOS — utilidades comunes =========
 def S(v) -> str:
