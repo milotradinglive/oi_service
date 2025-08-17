@@ -610,13 +610,15 @@ def procesar_autorizados(accesos_doc, main_file_url):
     return procesar_autorizados_drive(accesos_doc, main_file_url)
 
 # ========= Runner de UNA corrida =========
-def run_once():
+def run_once(skip_oi: bool = False):
     doc_main  = client.open_by_key(MAIN_FILE_ID)
     accesos   = client.open_by_key(ACCESS_FILE_ID)
     main_url  = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
 
-    actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
-    actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
+    if not skip_oi:
+        actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
+        actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
+
     acc = procesar_autorizados(accesos, main_url)
 
     return {
@@ -626,8 +628,10 @@ def run_once():
         "activados": acc.get("activados", 0),
         "revocados": acc.get("revocados", 0),
         "when": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "mode": os.getenv("ACCESS_MODE","drive")
+        "mode": os.getenv("ACCESS_MODE","drive"),
+        "skipped_oi": skip_oi,
     }
+
 
 # ========= Flask async guards =========
 def _authorized(req: request) -> bool:
@@ -671,14 +675,16 @@ def update():
 @app.get("/run")
 def http_run():
     try:
-        print("➡️  [/run] inicio", flush=True)
-        result = run_once()
+        skip = request.args.get("skip_oi", "").strip().lower() in ("1", "true", "yes")
+        print(f"➡️  [/run] inicio (skip_oi={skip})", flush=True)
+        result = run_once(skip_oi=skip)
         print(f"✅ [/run] ok: {result}", flush=True)
         return jsonify(result), 200
     except Exception as e:
         traceback.print_exc()
         print(f"❌ [/run] error: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 if __name__ == "__main__":
     # Para pruebas locales: http://127.0.0.1:8080/run
