@@ -684,6 +684,21 @@ def http_run():
         traceback.print_exc()
         print(f"❌ [/run] error: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+@app.get("/apply_access")
+def http_apply_access():
+    if not _authorized(request):
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        print("➡️  [/apply_access] inicio", flush=True)
+        accesos = client.open_by_key(ACCESS_FILE_ID)
+        main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
+        acc = procesar_autorizados(accesos, main_url)
+        print(f"✅ [/apply_access] ok: {acc}", flush=True)
+        return jsonify({"ok": True, **acc}), 200
+    except Exception as e:
+        traceback.print_exc()
+        print(f"❌ [/apply_access] error: {e}", flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
