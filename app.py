@@ -267,35 +267,35 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-            # === A1: fecha visible en la hoja ===
-    # Para "Semana siguiente": usar el ÚLTIMO día con OI (máxima expiración vista en datos)
+         # === A1: fecha visible en la hoja ===
+    # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
     exp_dates = []
-    for r in datos:
-        exp_val = r[4]
-        if exp_val:
+    for _, _, _, _, exp, _ in datos:
+        if exp:
             try:
-                exp_dates.append(_dt.strptime(exp_val, "%Y-%m-%d").date())
+                exp_dates.append(_dt.strptime(exp, "%Y-%m-%d").date())
             except:
                 pass
     ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
     def _calc_friday_from_today(pos_index: int) -> str:
         base = now_ny.date()
-        days_to_fri = (4 - base.weekday()) % 7
+        days_to_fri = (4 - base.weekday()) % 7  # 0=lun ... 4=vie
         if days_to_fri == 0:
-            days_to_fri = 7
+            days_to_fri = 7  # si hoy es viernes, tomar el próximo
         first_friday = base + _td(days=days_to_fri)
         target = first_friday + _td(days=7 * pos_index)
         return target.strftime("%Y-%m-%d")
 
     title_norm = ws.title.strip().lower()
-    if title_norm == "semana siguiente":
+    if title_norm in ("semana actual", "semana siguiente"):
+        # Usa el último día de OI visto para ESTA hoja; si no hay, cae al viernes calculado
         a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
     else:
         a1_value = fecha_txt
 
     try:
-        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp_max={ultima_exp_str})", flush=True)
+        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
