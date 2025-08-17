@@ -619,6 +619,23 @@ def _ensure_groups_only_on_file():
     if commenter_grp and not have_commenter:
         _attach_group(commenter_grp, "commenter")
 
+    if commenter_grp and not have_commenter:
+        _attach_group(commenter_grp, "commenter")
+
+# --- NUEVO: quitar miembro de grupo (top-level) ---
+def remove_member(directory, group_email, user_email):
+    """Quita user_email del grupo group_email si existe."""
+    if not directory or not group_email or not user_email:
+        return "skip"
+    try:
+        directory.members().delete(groupKey=group_email, memberKey=user_email).execute()
+        return "ok"
+    except HttpError as e:
+        msg = str(e).lower()
+        if "not found" in msg or "resource not found" in msg:
+            return "not_member"
+        raise
+
 def procesar_autorizados_groups(accesos_doc, main_file_url):
     try:
         hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
@@ -742,128 +759,12 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print(f"⚠️ procesar_autorizados_groups: {e}")
         return {"activados": 0, "revocados": 0}
 
-def procesar_autorizados_groups(accesos_doc, main_file_url):
-    try:
-        hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
-    except gspread.exceptions.WorksheetNotFound:
-        hoja_aut = accesos_doc.add_worksheet(title=ACCESS_SHEET_TITLE, rows=500, cols=8)
-        hoja_aut.update(values=[["email","duracion","rol","creado_utc","expira_utc","estado","perm_id","nota"]], range_name="A1")
-
-    rows = hoja_aut.get_all_values()
-    if not rows or len(rows) == 1:
-        print("ℹ️ AUTORIZADOS vacío.")
-        return {"activados": 0, "revocados": 0}
-
-    # === NUEVO: limpiar usuarios individuales y asegurar solo grupos en el archivo ===
-    _ensure_groups_only_on_file()
-   
-    def remove_member(directory, group_email, user_email):
-    """Quita user_email del grupo group_email si existe."""
-    if not directory or not group_email or not user_email:
-        return "skip"
-    try:
-        directory.members().delete(groupKey=group_email, memberKey=user_email).execute()
-        return "ok"
-    except HttpError as e:
-        msg = str(e).lower()
-        if "not found" in msg or "resource not found" in msg:
-            return "not_member"
-        raise
-
-    try:
-        from google.oauth2.service_account import Credentials as SACreds
-        ADMIN_SUBJECT = os.getenv("ADMIN_SUBJECT", "").strip()
-        SCOPES_DIR = [
-            "https://www.googleapis.com/auth/admin.directory.group.member",
-            "https://www.googleapis.com/auth/apps.groups.settings",
-        ]
-
-        directory = None
-        if ADMIN_SUBJECT:
-            creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-            if not creds_json:
-                raise RuntimeError("Falta GOOGLE_CREDENTIALS_JSON para Directory API")
-            creds_info = json.loads(creds_json)
-
-            creds_delegated = SACreds.from_service_account_info(
-                creds_info, scopes=SCOPES_DIR, subject=ADMIN_SUBJECT
-            )
-            directory = build("admin", "directory_v1", credentials=creds_delegated)
-
-        GROUP_READER_EMAIL = os.getenv("GROUP_READER_EMAIL", "accesos-lectores@milotradinglive.com")
-        GROUP_COMMENTER_EMAIL = os.getenv("GROUP_COMMENTER_EMAIL", "accesos-comentadores@milotradinglive.com")
-        def grupo_para_rol(rol): return GROUP_COMMENTER_EMAIL if (rol or "reader").lower()=="commenter" else GROUP_READER_EMAIL
-
-        def add_member(group_email, user_email):
-            if not directory:
-                return "skip"
-            try:
-                directory.members().insert(groupKey=group_email, body={"email": user_email, "role": "MEMBER"}).execute()
-                return "ok"
-            except HttpError as e:
-                msg = str(e).lower()
-                if any(s in msg for s in ("duplicate","memberexists","already exists")):
-                    return "ya_miembro"
-                raise
-
-        activados = revocados = 0
-        now_utc = datetime.now(timezone.utc)
-
-        sa_email = ""
-        try:
-            sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","").lower()
-        except:
-            sa_email = ""
-
-        for i, raw in enumerate(rows[1:], start=2):
-            row = (raw + [""]*8)[:8]
-            email, dur_txt, rol, creado, expira, estado, perm_id, nota = [(c or "").strip() for c in row]
-            if not any([email, dur_txt, rol, creado, expira, estado, perm_id, nota]): 
-                continue
-            if sa_email and email.lower() == sa_email:
-                if nota != "IGNORADO (service account)":
-                    hoja_aut.update(values=[["IGNORADO (service account)"]], range_name=f"H{i}")
-                continue
-
-            r = (rol or "reader").lower()
-            if r not in ("reader","commenter"): r = "reader"
-            est = (estado or "").lower()
-            grupo = grupo_para_rol(r)
-
-            if est in ("", "pendiente"):
-                result = add_member(grupo, email)
-                exp_dt = now_utc + _parse_duration_groups(dur_txt or "24h")
-                now_iso = now_utc.isoformat(timespec="seconds")
-                hoja_aut.update(values=[[now_iso, exp_dt.isoformat(timespec="seconds"), "ACTIVO", f"group:{grupo}"]], range_name=f"D{i}:G{i}")
-                hoja_aut.update(values=[[f"Miembro en {grupo}. Link: {main_file_url}"]], range_name=f"H{i}")
-                activados += 1
-                print(("✅ ACTIVADO " if result=="ok" else "ℹ️ (Idempotente) ") + f"{email} en {grupo} hasta {exp_dt} UTC")
-                time.sleep(1.0)
-
-            elif est == "activo" and expira:
-                try:
-                    exp_dt = datetime.fromisoformat(expira.replace("Z",""))
-                    if exp_dt.tzinfo is None:
-                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                except Exception:
-                    hoja_aut.update(values=[[f"ERROR_PARSE_EXP: {expira}"]], range_name=f"H{i}")
-                    continue
-                if now_utc >= exp_dt:
-                    hoja_aut.update(values=[["REVOCADO"]], range_name=f"F{i}")
-                    hoja_aut.update(values=[["Salida del grupo por vencimiento"]], range_name=f"H{i}")
-                    revocados += 1
-                    print(f"🗑️ REVOCADO {email} (vencido)")
-
-        return {"activados": activados, "revocados": revocados}
-
-    except Exception as e:
-        print(f"⚠️ procesar_autorizados_groups: {e}")
-        return {"activados": 0, "revocados": 0}
 
 # ========= Wrapper: elige modo por ENV =========
 def procesar_autorizados(accesos_doc, main_file_url):
     mode = os.getenv("ACCESS_MODE","drive").strip().lower()
     if mode == "groups":
+        return procesar_autorizados_groups(accesos_doc, main_file_url)
     return procesar_autorizados_drive(accesos_doc, main_file_url)
 
 # ========= Runner de UNA corrida =========
