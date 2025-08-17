@@ -205,16 +205,16 @@ def obtener_dinero(ticker, posicion_fecha=0):
         print(f"❌ Error con {ticker}: {e}")
         return 0, 0, 0.0, 0.0, 0, 0, None
 
-# ========= Escritura en Google Sheets (OI) =========
 from gspread.exceptions import WorksheetNotFound
 
+# ========= Escritura en Google Sheets (OI) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # Abre o crea la hoja si no existe
     try:
         ws = doc.worksheet(sheet_title)
     except WorksheetNotFound:
         ws = doc.add_worksheet(title=sheet_title, rows=1000, cols=15)
-        # encabezado de una para hojas nuevas
+        # deja el encabezado preparado en A2 (lo volveremos a escribir igual cada corrida)
         ws.update(values=[[
             "Fecha","Hora","Ticker",
             "RELATIVE VERDE","RELATIVE ROJO",
@@ -228,10 +228,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
-    # A1 = última fecha de toma (no tocar después)
+    # A1 = última fecha de toma (YYYY-MM-DD)
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")
     try:
+        print(f"[OI] Hoja='{ws.title}' A1 <- {fecha_txt}", flush=True)
         ws.update_cell(1, 1, fecha_txt)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
@@ -239,14 +240,15 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
+    # --- recolecta datos ---
     datos, resumen = [], []
-
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
         datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
+    # --- agrega por ticker ---
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
         agg[tk]["EXP"] = agg[tk]["EXP"] or exp
@@ -299,7 +301,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ]]
     ws.update(values=encabezado, range_name="A2:M2")
 
-    # Limpia SOLO cuerpo
+    # Limpia SOLO cuerpo (preserva A1)
     ws.batch_clear(["A3:M1000"])
 
     def fuerza_to_float(s):
@@ -307,7 +309,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         except: return -9999.0
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
-
     if resumen:
         ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
 
