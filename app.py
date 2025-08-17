@@ -12,13 +12,21 @@ from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+# ========= Flask app =========
+app = Flask(__name__)
+OI_SECRET = os.getenv("OI_SECRET", "").strip()
+
 APP_VERSION = os.getenv("RENDER_GIT_COMMIT", "")[:7] or "dev"
 print(f"🚀 Iniciando oi-updater versión {APP_VERSION}", flush=True)
 
 @app.get("/")
 def root():
-    return jsonify({"status": "ok", "service": "oi-updater", "version": APP_VERSION,
-                    "time": datetime.utcnow().isoformat() + "Z"})
+    return jsonify({
+        "status": "ok",
+        "service": "oi-updater",
+        "version": APP_VERSION,
+        "time": datetime.utcnow().isoformat() + "Z"
+    })
 
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
@@ -208,7 +216,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")   # texto para que Sheets no convierta
 
-    # Debug UTC/NY en hoja (N1:O2) y logs
+    # Debug UTC/NY en hoja ("N1:O2") y logs
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     ws.update(values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
                   ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
@@ -452,9 +460,6 @@ def _run_guarded():
         _is_running = False
         print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
 
-@app.get("/")
-def root():
-    return jsonify({"status": "ok", "service": "oi-updater", "time": datetime.utcnow().isoformat() + "Z"})
 
 @app.get("/healthz")
 def healthz():
