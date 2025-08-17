@@ -217,7 +217,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     hora_txt  = now_ny.strftime("%H:%M:%S")   # texto para que Sheets no convierta
 
     # Debug solo a logs (NO escribir en N/O)
-print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
+    print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
 
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
@@ -287,19 +287,17 @@ print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}"
     ws.batch_clear(["A2:M1000"])
 
     def fuerza_to_float(s):
-        try:    return float(s.replace("%","").replace(",", "."))
+        try:    return float(s.replace("%","").replace(",", "."))  # "12,3%" -> 12.3
         except: return -9999.0
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     ws.update(values=resumen, range_name=f"A2:M{len(resumen)+1}")
 
-# Limpia completamente N y O en esta hoja
-try:
-    ws.batch_clear(["N:O"])
-except Exception as e:
-    print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
-
-
+    # Limpia completamente N y O en esta hoja (por si existían restos)
+    try:
+        ws.batch_clear(["N:O"])
+    except Exception as e:
+        print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
 
 # ===== AUTORIZADOS (idempotente básico con grupos) =====
 def _parse_duration(txt):
