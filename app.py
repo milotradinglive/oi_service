@@ -567,6 +567,78 @@ def _parse_duration_groups(txt):
     if txt.endswith("w"): return timedelta(weeks=int(txt[:-1] or 1))
     return timedelta(hours=24)
 
+def _parse_duration_groups(txt):
+    txt = (txt or "").strip().lower()
+    if txt.endswith("h"): return timedelta(hours=int(txt[:-1] or 24))
+    if txt.endswith("d"): return timedelta(days=int(txt[:-1] or 1))
+    if txt.endswith("w"): return timedelta(weeks=int(txt[:-1] or 1))
+    return timedelta(hours=24)
+
+
+# === NUEVO: enforcement de permisos solo grupos ===
+def _ensure_groups_only_on_file():
+    reader_grp = os.getenv("GROUP_READER_EMAIL", "").strip().lower()
+    commenter_grp = os.getenv("GROUP_COMMENTER_EMAIL", "").strip().lower()
+
+    perms = drive.permissions().list(
+        fileId=MAIN_FILE_ID, fields="permissions(id,emailAddress,role,type)"
+    ).execute().get("permissions", [])
+
+    have_reader = False
+    have_commenter = False
+
+    for p in perms:
+        p_type = S(p.get("type")).lower()
+        p_id   = S(p.get("id"))
+        p_mail = S(p.get("emailAddress")).lower()
+        if p_type == "user" and p_id:
+            try:
+                drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=p_id).execute()
+                print(f"🧹 Borrado permiso USER {p_mail}")
+            except Exception as e:
+                print(f"⚠️ No pude borrar USER {p_mail}: {e}")
+
+        if p_type == "group":
+            if p_mail == reader_grp:
+                have_reader = True
+            if p_mail == commenter_grp:
+                have_commenter = True
+
+    def _attach_group(group_email, role):
+        if not group_email:
+            return
+        try:
+            drive.permissions().create(
+                fileId=MAIN_FILE_ID,
+                body={"type": "group", "role": role, "emailAddress": group_email},
+                fields="id",
+                sendNotificationEmail=False
+            ).execute()
+            print(f"✅ Adjuntado grupo {group_email} como {role}")
+        except HttpError as e:
+            msg = str(e).lower()
+            if "alreadyexists" in msg or "duplicate" in msg:
+                print(f"ℹ️ Grupo {group_email} ya estaba adjunto")
+            else:
+                raise
+
+    if reader_grp and not have_reader:
+        _attach_group(reader_grp, "reader")
+    if commenter_grp and not have_commenter:
+        _attach_group(commenter_grp, "commenter")
+
+def remove_member(group_email, user_email):
+    if not group_email or not user_email:
+        return "skip"
+    try:
+        directory.members().delete(groupKey=group_email, memberKey=user_email).execute()
+        return "ok"
+    except HttpError as e:
+        msg = str(e).lower()
+        if "not found" in msg:
+            return "not_member"
+        raise
+
 def procesar_autorizados_groups(accesos_doc, main_file_url):
     try:
         hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
@@ -578,6 +650,18 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
     if not rows or len(rows) == 1:
         print("ℹ️ AUTORIZADOS vacío.")
         return {"activados": 0, "revocados": 0}
+
+    # === NUEVO: limpiar usuarios individuales y asegurar solo grupos en el archivo ===
+    _ensure_groups_only_on_file()
+
+    try:
+        from google.oauth2.service_account import Credentials as SACreds
+        ADMIN_SUBJECT = os.getenv("ADMIN_SUBJECT", "").strip()
+        SCOPES_DIR = [
+            "https://www.googleapis.com/auth/admin.directory.group.member",
+            "https://www.googleapis.com/auth/apps.groups.settings",
+        ]
+        ...
 
     try:
         from google.oauth2.service_account import Credentials as SACreds
