@@ -6,6 +6,7 @@ import threading
 from collections import defaultdict as _dd
 import gspread
 import requests
+import re
 
 from flask import Flask, jsonify, request
 from oauth2client.service_account import ServiceAccountCredentials
@@ -34,7 +35,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
 
 # IDs por entorno (defaults para STAGING)
 MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID",   "1DlwiPxbgDWAQmM_7n5MRi2Ms4YRas5SYKsteXYHD3Ks")
-ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1ZwLVuinFA1sBprPMWVliu_nwdr1mlmav6FJ-zQm2FlE")  # usa otro ID si tu hoja de accesos es distinta
+ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1ZwLVuinFA1sBprPMWVliu_nwdr1mlmav6FJ-zQm2FlE")
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
 
 TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN", "")
@@ -50,7 +51,7 @@ def make_gspread_and_creds():
     return gspread.authorize(legacy_creds), legacy_creds, creds_info
 
 client, google_api_creds, _creds_info = make_gspread_and_creds()
-drive = build("drive", "v3", credentials=google_api_creds)  # (opcional; útil para debug/links)
+drive = build("drive", "v3", credentials=google_api_creds)
 
 # ========= Datos base =========
 TICKERS = [
@@ -94,7 +95,7 @@ def fmt_entero_miles(x):
 def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
-# ========= Lógica de expiraciones / datos =========
+# ========= Lógica de expiraciones / datos (OI) =========
 from datetime import datetime as _dt, timedelta as _td
 
 def elegir_expiracion_viernes(expiraciones, posicion_fecha):
@@ -204,39 +205,34 @@ def obtener_dinero(ticker, posicion_fecha=0):
         print(f"❌ Error con {ticker}: {e}")
         return 0, 0, 0.0, 0.0, 0, 0, None
 
-# ========= Escritura en Google Sheets =========
+# ========= Escritura en Google Sheets (OI) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws = doc.worksheet(sheet_title)
 
-    # Hora NY (derivada de UTC) inequívoca
+    # Hora NY
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
     fecha_txt = f"{now_ny:%Y-%m-%d}"
-    hora_txt  = now_ny.strftime("%H:%M:%S")   # texto para que Sheets no convierta
+    hora_txt  = now_ny.strftime("%H:%M:%S")
 
-    # Debug solo a logs (NO escribir en N/O)
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
-
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
 
-    # Recolecta datos por ticker
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
         datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # Agrega por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
         agg[tk]["EXP"] = agg[tk]["EXP"] or exp
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Construye filas finales
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
@@ -266,16 +262,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         else: color_final = "⚪"
 
         resumen.append([
-            fecha_txt,      # A: Fecha (NY)
-            hora_txt,       # B: Hora (NY, texto)
-            tk,
+            fecha_txt, hora_txt, tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
             pct_str(pct_c), pct_str(pct_p),
             color_oi, color_vol, pct_str(fuerza), color_final
         ])
 
-    # Escribe encabezado y cuerpo
     encabezado = [[
         "Fecha","Hora","Ticker",
         "RELATIVE VERDE","RELATIVE ROJO",
@@ -287,27 +280,199 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ws.batch_clear(["A2:M1000"])
 
     def fuerza_to_float(s):
-        try:    return float(s.replace("%","").replace(",", "."))  # "12,3%" -> 12.3
+        try:    return float(s.replace("%","").replace(",", "."))
         except: return -9999.0
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     ws.update(values=resumen, range_name=f"A2:M{len(resumen)+1}")
-
-    # Limpia completamente N y O en esta hoja (por si existían restos)
     try:
         ws.batch_clear(["N:O"])
     except Exception as e:
         print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
 
-# ===== AUTORIZADOS (idempotente básico con grupos) =====
-def _parse_duration(txt):
+# ========= ACCESOS — utilidades comunes =========
+def S(v) -> str:
+    if v is None: return ""
+    try: return str(v).strip()
+    except: return ""
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
+
+def _col_indexes(ws):
+    headers = [S(h).lower() for h in ws.row_values(1)]
+    def col(name):
+        name = name.strip().lower()
+        try:
+            return headers.index(name) + 1
+        except ValueError:
+            raise RuntimeError(f"Encabezado '{name}' no encontrado en {ws.title}.")
+    return {
+        "email":      col("email"),
+        "duracion":   col("duracion"),
+        "rol":        col("rol"),
+        "creado_utc": col("creado_utc"),
+        "expira_utc": col("expira_utc"),
+        "estado":     col("estado"),
+        "perm_id":    col("perm_id"),
+        "nota":       col("nota"),
+    }
+
+# ========= ACCESOS — modo DRIVE (igual a apply_access.py) =========
+def _parse_duration_drive(s: str) -> timedelta:
+    s = S(s).lower()
+    if not s: return timedelta(hours=24)
+    total_h = 0.0
+    for num, unit in re.findall(r'(\d+(?:\.\d+)?)([dh])', s):
+        n = float(num); total_h += n * (24 if unit == 'd' else 1)
+    if total_h == 0:
+        try: total_h = float(s)
+        except: total_h = 24.0
+    return timedelta(hours=total_h)
+
+def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=True, email_message=None):
+    base = {"type": "user", "role": role, "emailAddress": email}
+    if email_message: base["emailMessage"] = email_message
+    try:
+        body = {**base, "expirationTime": exp_dt.replace(microsecond=0).isoformat()}
+        created = drive.permissions().create(
+            fileId=MAIN_FILE_ID, body=body, fields="id", sendNotificationEmail=send_mail
+        ).execute()
+        return created["id"], "OK"
+    except HttpError as e:
+        msg = str(e)
+        if "cannotSetExpiration" in msg:
+            created = drive.permissions().create(
+                fileId=MAIN_FILE_ID, body=base, fields="id", sendNotificationEmail=send_mail
+            ).execute()
+            return created["id"], "NO_EXP"
+        if "invalidSharingRequest" in msg:
+            created = drive.permissions().create(
+                fileId=MAIN_FILE_ID, body=base, fields="id", sendNotificationEmail=True
+            ).execute()
+            return created["id"], "NOTIFIED"
+        raise
+
+def _revoke_by_id(perm_id: str):
+    drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=perm_id).execute()
+
+def _get_sa_email_from_env_info() -> str:
+    try:
+        return S(_creds_info.get("client_email","")).lower()
+    except:
+        try:
+            return S(json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","")).lower()
+        except:
+            return ""
+
+def procesar_autorizados_drive(accesos_doc, main_file_url):
+    hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
+    cols = _col_indexes(hoja_aut)
+    rows = hoja_aut.get_all_records(default_blank="")
+    now  = datetime.now(timezone.utc)
+    sa_email = _get_sa_email_from_env_info()
+    send_mail = (os.getenv("SEND_SHARE_EMAIL","true").strip().lower() != "false")
+
+    perms = drive.permissions().list(
+        fileId=MAIN_FILE_ID, fields="permissions(id,emailAddress,role,type)"
+    ).execute().get("permissions", [])
+    by_email = {(S(p.get("emailAddress")).lower()): p for p in perms if S(p.get("type")).lower()=="user"}
+
+    activados = revocados = sincronizados = 0
+
+    for idx, r in enumerate(rows, start=2):
+        email   = S(r.get("email")).lower()
+        dur_txt = S(r.get("duracion"))
+        rol_in  = S(r.get("rol")).lower() or "reader"
+        estado  = S(r.get("estado")).upper()
+        perm_id = S(r.get("perm_id"))
+        expira  = S(r.get("expira_utc"))
+        nota    = S(r.get("nota"))
+
+        if not email: continue
+        role = rol_in if rol_in in ("reader","commenter","writer") else "reader"
+
+        if email == sa_email:
+            hoja_aut.update_cell(idx, cols["nota"], "IGNORADO (service account)")
+            continue
+
+        # Revocado manual
+        if estado == "REVOCADO":
+            pid = perm_id or (by_email.get(email) or {}).get("id")
+            try:
+                if pid:
+                    try: _revoke_by_id(pid)
+                    except HttpError as e:
+                        if getattr(e,"resp",None) and getattr(e.resp,"status",None) in (404,400): pass
+                        else: raise
+                hoja_aut.update_cell(idx, cols["perm_id"], "")
+                hoja_aut.update_cell(idx, cols["nota"], "Revocado (manual o ya no existía)")
+                by_email.pop(email, None)
+                revocados += 1
+            except Exception as e:
+                hoja_aut.update_cell(idx, cols["nota"], f"ERROR revoke: {e}")
+            continue
+
+        # Alta
+        if estado in ("", "PENDIENTE"):
+            try:
+                dur_td = _parse_duration_drive(dur_txt)
+                exp_dt = now + dur_td
+                pid, modo = _grant_with_optional_exp(email, role, exp_dt, send_mail=send_mail)
+                hoja_aut.update_cell(idx, cols["creado_utc"], _iso(now))
+                hoja_aut.update_cell(idx, cols["expira_utc"], _iso(exp_dt))
+                hoja_aut.update_cell(idx, cols["estado"], "ACTIVO")
+                hoja_aut.update_cell(idx, cols["perm_id"], pid)
+                hoja_aut.update_cell(idx, cols["nota"], f"Concedido ({modo})")
+                by_email[email] = {"id": pid}
+                activados += 1
+            except Exception as e:
+                hoja_aut.update_cell(idx, cols["nota"], f"ERROR grant: {e}")
+            continue
+
+        # Activo → sync + vencimiento
+        if estado == "ACTIVO":
+            if not perm_id and email in by_email:
+                pid = by_email[email]["id"]
+                hoja_aut.update_cell(idx, cols["perm_id"], pid)
+                if not nota:
+                    hoja_aut.update_cell(idx, cols["nota"], "Sincronizado (existía en Drive)")
+                sincronizados += 1
+
+            if expira:
+                try:
+                    iso = expira.rstrip("Z")
+                    exp_dt = datetime.fromisoformat(iso)
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    hoja_aut.update_cell(idx, cols["nota"], f"ERROR_PARSE_EXP: {expira}")
+                    continue
+
+                if datetime.now(timezone.utc) >= exp_dt:
+                    try:
+                        pid = (by_email.get(email) or {}).get("id") or perm_id
+                        if pid: _revoke_by_id(pid)
+                        hoja_aut.update_cell(idx, cols["estado"], "REVOCADO")
+                        hoja_aut.update_cell(idx, cols["perm_id"], "")
+                        hoja_aut.update_cell(idx, cols["nota"], "Vencimiento automático")
+                        by_email.pop(email, None)
+                        revocados += 1
+                    except Exception as e:
+                        hoja_aut.update_cell(idx, cols["nota"], f"ERROR_REVOKE: {e}")
+
+    print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
+    return {"activados": activados, "revocados": revocados}
+
+# ========= ACCESOS — modo GROUPS (tu versión original) =========
+def _parse_duration_groups(txt):
     txt = (txt or "").strip().lower()
     if txt.endswith("h"): return timedelta(hours=int(txt[:-1] or 24))
     if txt.endswith("d"): return timedelta(days=int(txt[:-1] or 1))
     if txt.endswith("w"): return timedelta(weeks=int(txt[:-1] or 1))
     return timedelta(hours=24)
 
-def procesar_autorizados(accesos_doc, main_file_url):
+def procesar_autorizados_groups(accesos_doc, main_file_url):
     try:
         hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
     except gspread.exceptions.WorksheetNotFound:
@@ -319,7 +484,6 @@ def procesar_autorizados(accesos_doc, main_file_url):
         print("ℹ️ AUTORIZADOS vacío.")
         return {"activados": 0, "revocados": 0}
 
-    # Directory API solo si hay ADMIN_SUBJECT definido
     try:
         from google.oauth2.service_account import Credentials as SACreds
         ADMIN_SUBJECT = os.getenv("ADMIN_SUBJECT", "").strip()
@@ -359,15 +523,11 @@ def procesar_autorizados(accesos_doc, main_file_url):
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
-                # CORRECCIÓN: tomar el email de la service account correctamente
         sa_email = ""
-        if hasattr(_creds_info, "service_account_email"):
-            sa_email = _creds_info.service_account_email
-        else:
-            try:
-                sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","").lower()
-            except:
-                sa_email = ""
+        try:
+            sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","").lower()
+        except:
+            sa_email = ""
 
         for i, raw in enumerate(rows[1:], start=2):
             row = (raw + [""]*8)[:8]
@@ -386,7 +546,7 @@ def procesar_autorizados(accesos_doc, main_file_url):
 
             if est in ("", "pendiente"):
                 result = add_member(grupo, email)
-                exp_dt = now_utc + _parse_duration(dur_txt or "24h")
+                exp_dt = now_utc + _parse_duration_groups(dur_txt or "24h")
                 now_iso = now_utc.isoformat(timespec="seconds")
                 hoja_aut.update(values=[[now_iso, exp_dt.isoformat(timespec="seconds"), "ACTIVO", f"group:{grupo}"]], range_name=f"D{i}:G{i}")
                 hoja_aut.update(values=[[f"Miembro en {grupo}. Link: {main_file_url}"]], range_name=f"H{i}")
@@ -411,14 +571,21 @@ def procesar_autorizados(accesos_doc, main_file_url):
         return {"activados": activados, "revocados": revocados}
 
     except Exception as e:
-        print(f"⚠️ procesar_autorizados sin Directory API: {e}")
+        print(f"⚠️ procesar_autorizados_groups: {e}")
         return {"activados": 0, "revocados": 0}
+
+# ========= Wrapper: elige modo por ENV =========
+def procesar_autorizados(accesos_doc, main_file_url):
+    mode = os.getenv("ACCESS_MODE","drive").strip().lower()
+    if mode == "groups":
+        return procesar_autorizados_groups(accesos_doc, main_file_url)
+    return procesar_autorizados_drive(accesos_doc, main_file_url)
 
 # ========= Runner de UNA corrida =========
 def run_once():
     doc_main  = client.open_by_key(MAIN_FILE_ID)
     accesos   = client.open_by_key(ACCESS_FILE_ID)
-    main_url  = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"  # CORREGIDO
+    main_url  = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
 
     actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
     actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
@@ -430,10 +597,11 @@ def run_once():
         "access_title": accesos.title,
         "activados": acc.get("activados", 0),
         "revocados": acc.get("revocados", 0),
-        "when": datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        "when": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "mode": os.getenv("ACCESS_MODE","drive")
     }
 
-# ========= Flask app =========
+# ========= Flask async guards =========
 def _authorized(req: request) -> bool:
     if not OI_SECRET: return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
@@ -459,7 +627,6 @@ def _run_guarded():
     finally:
         _is_running = False
         print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
-
 
 @app.get("/healthz")
 def healthz():
