@@ -336,13 +336,17 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")): color_final = "🟢🔴"
         else: color_final = "⚪"
 
-        resumen.append([
-            fecha_txt, hora_txt, tk,
-            fmt_millones(m_call), fmt_millones(m_put),
-            fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-            pct_str(pct_c), pct_str(pct_p),
-            color_oi, color_vol, pct_str(fuerza), color_final
-        ])
+# Usa la expiración que efectivamente se usó para este ticker;
+# si por alguna razón no vino, cae al valor escrito en A1, y luego a la fecha actual.
+exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
+
+resumen.append([
+    exp_fila, hora_txt, tk,
+    fmt_millones(m_call), fmt_millones(m_put),
+    fmt_entero_miles(v_call), fmt_entero_miles(v_put),
+    pct_str(pct_c), pct_str(pct_p),
+    color_oi, color_vol, pct_str(fuerza), color_final
+])
 
     # Encabezado en fila 2 y cuerpo desde fila 3 (preservando A1)
     encabezado = [[
