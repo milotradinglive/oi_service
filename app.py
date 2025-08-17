@@ -658,18 +658,7 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         GROUP_COMMENTER_EMAIL = os.getenv("GROUP_COMMENTER_EMAIL", "accesos-comentadores@milotradinglive.com")
         def grupo_para_rol(rol): return GROUP_COMMENTER_EMAIL if (rol or "reader").lower()=="commenter" else GROUP_READER_EMAIL
 
-        def add_member(group_email, user_email):
-            if not directory:
-                return "skip"
-            try:
-                directory.members().insert(groupKey=group_email, body={"email": user_email, "role": "MEMBER"}).execute()
-                return "ok"
-            except HttpError as e:
-                msg = str(e).lower()
-                if any(s in msg for s in ("duplicate","memberexists","already exists")):
-                    return "ya_miembro"
-                raise
-
+       
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
