@@ -214,11 +214,14 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     ny_tz   = pytz.timezone("America/New_York")
     now_ny  = now_utc.astimezone(ny_tz)
 
+    # ⬅️ Última fecha de toma en A1 (YYYY-MM-DD)
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt  = now_ny.strftime("%H:%M:%S")
+    ws.update_cell(1, 1, fecha_txt)
 
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
+
     datos, resumen = [], []
 
     for tk in TICKERS:
@@ -269,6 +272,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             color_oi, color_vol, pct_str(fuerza), color_final
         ])
 
+    # Encabezado en fila 2
     encabezado = [[
         "Fecha","Hora","Ticker",
         "RELATIVE VERDE","RELATIVE ROJO",
@@ -276,19 +280,25 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         "%SUBIDA","%BAJADA",
         "INTENCION","VOLUMEN","Fuerza","Relación"
     ]]
-    ws.update(values=encabezado, range_name="A1:M1")
-    ws.batch_clear(["A2:M1000"])
+    ws.update(values=encabezado, range_name="A2:M2")
+
+    # Limpia SOLO cuerpo
+    ws.batch_clear(["A3:M1000"])
 
     def fuerza_to_float(s):
         try:    return float(s.replace("%","").replace(",", "."))
         except: return -9999.0
 
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
-    ws.update(values=resumen, range_name=f"A2:M{len(resumen)+1}")
+
+    if resumen:
+        ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
+
     try:
         ws.batch_clear(["N:O"])
     except Exception as e:
         print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
+
 
 # ========= ACCESOS — utilidades comunes =========
 def S(v) -> str:
