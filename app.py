@@ -267,16 +267,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-         # === A1: fecha visible en la hoja ===
-    # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
-    exp_dates = []
-    exp_dates = []
-for _, _, _, _, exp_vto, _ in datos:
-    if exp_vto:
-        try:
-            exp_dates.append(_dt.strptime(exp_vto, "%Y-%m-%d").date())
-        except:
-            pass
+     # === A1: fecha visible en la hoja ===
+     # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
+     exp_dates = []
+     for _, _, _, _, exp_vto, _ in datos:
+         if exp_vto:
+            try:
+                exp_dates.append(_dt.strptime(exp_vto, "%Y-%m-%d").date())
+            except:
+                pass
+
     ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
     def _calc_friday_from_today(pos_index: int) -> str:
@@ -310,31 +310,17 @@ for _, _, _, _, exp_vto, _ in datos:
         agg[tk][side][1] += vol
 
     for tk in sorted(agg.keys()):
-        m_call, v_call = agg[tk]["CALL"]
-        m_put,  v_put  = agg[tk]["PUT"]
-       
-        total_m = m_call + m_put
-        if total_m == 0:
-            pct_c = pct_p = fuerza = 0.0
-        else:
-            pct_c = round(100 * m_call / total_m, 1)
-            pct_p = round(100 - pct_c, 1)
-            fuerza = pct_c if pct_c > pct_p else -pct_p
-
-        total_vol = v_call + v_put
-        if total_vol == 0:
-            pct_vc = pct_vp = fuerza_vol = 0.0
-        else:
-            pct_vc = round(100 * v_call / total_vol, 1)
-            pct_vp = round(100 - pct_vc, 1)
-            fuerza_vol = pct_vc if pct_vc > pct_vp else -pct_vp
-
-        color_oi  = "🟢" if fuerza >= 20 else "🔴" if fuerza <= -20 else "⚪"
-        color_vol = "🟢" if fuerza_vol >= 20 else "🔴" if fuerza_vol <= -20 else "⚪"
-        if color_oi == "🟢" and color_vol == "🟢":   color_final = "🟢🟢"
-        elif color_oi == "🔴" and color_vol == "🔴": color_final = "🔴🔴"
-        elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")): color_final = "🟢🔴"
-        else: color_final = "⚪"
+    m_call, v_call = agg[tk]["CALL"]
+    m_put,  v_put  = agg[tk]["PUT"]
+    ...
+    if color_oi == "🟢" and color_vol == "🟢":
+        color_final = "🟢🟢"
+    elif color_oi == "🔴" and color_vol == "🔴":
+        color_final = "🔴🔴"
+    elif (color_oi, color_vol) in (("🟢","🔴"),("🔴","🟢")):
+        color_final = "🟢🔴"
+    else:
+        color_final = "⚪"
 
     # Usa la expiración que efectivamente se usó para este ticker;
     # si por alguna razón no vino, cae al valor escrito en A1, y luego a la fecha actual.
@@ -347,6 +333,7 @@ for _, _, _, _, exp_vto, _ in datos:
         pct_str(pct_c), pct_str(pct_p),
         color_oi, color_vol, pct_str(fuerza), color_final
     ])
+
 
     # Encabezado en fila 2 y cuerpo desde fila 3 (preservando A1)
     encabezado = [[
