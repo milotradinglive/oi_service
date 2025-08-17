@@ -267,7 +267,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-        # === A1: fecha visible en la hoja ===
+            # === A1: fecha visible en la hoja ===
     # Para "Semana siguiente": usar el ÚLTIMO día con OI (máxima expiración vista en datos)
     exp_dates = []
     for r in datos:
@@ -279,9 +279,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 pass
     ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
-
-
-        def _calc_friday_from_today(pos_index: int) -> str:
+    def _calc_friday_from_today(pos_index: int) -> str:
         base = now_ny.date()
         days_to_fri = (4 - base.weekday()) % 7
         if days_to_fri == 0:
@@ -296,11 +294,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     else:
         a1_value = fecha_txt
 
-    print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp_max={ultima_exp_str})", flush=True)
-
+    try:
+        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
+
 
     # --- agrega por ticker ---
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
