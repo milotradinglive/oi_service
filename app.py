@@ -269,7 +269,17 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     # === A1: fecha visible en la hoja ===
     # Si es "Semana siguiente", usa el viernes de referencia (exp); si falta, calcula fallback.
-    viernes_ref_global = next((row[4] for row in datos if row[4]), None)
+    # Para "Semana siguiente": usar el ÚLTIMO día con OI (máxima expiración vista en datos)
+exp_dates = []
+for r in datos:
+    exp_val = r[4]
+    if exp_val:
+        try:
+            exp_dates.append(_dt.strptime(exp_val, "%Y-%m-%d").date())
+        except:
+            pass
+ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
+
 
     def _calc_friday_from_today(pos_index: int) -> str:
         # pos_index=0 -> próximo viernes; 1 -> viernes de la semana siguiente, etc.
@@ -282,13 +292,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         return target.strftime("%Y-%m-%d")
 
     title_norm = ws.title.strip().lower()
-    if title_norm == "semana siguiente":
-        a1_value = viernes_ref_global or _calc_friday_from_today(posicion_fecha)
-    else:
-        a1_value = fecha_txt
+if title_norm == "semana siguiente":
+    a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
+else:
+    a1_value = fecha_txt
 
     try:
-        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp={viernes_ref_global})", flush=True)
+        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
