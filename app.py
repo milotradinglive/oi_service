@@ -245,30 +245,47 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # === A1: fecha visible en la hoja ===
     # Si es "Semana siguiente" muestra el viernes de referencia (exp); si no, hoy.
     viernes_ref_global = next((row[4] for row in datos if row[4]), None)
-    if ws.title.strip().lower() == "semana siguiente" and viernes_ref_global:
-        a1_value = viernes_ref_global           # ej. 2025-08-22
-    else:
-        a1_value = fecha_txt                    # hoy (NY)
+if ws.title.strip().lower() == "semana siguiente" and viernes_ref_global:
+    a1_value = viernes_ref_global           # ej. 2025-08-22
+else:
+    a1_value = fecha_txt                    # hoy (NY)
 
-    try:
-        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value}", flush=True)
-        ws.update_cell(1, 1, a1_value)
-    except Exception as e:
-        print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
+try:
+    print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value}", flush=True)
+    ws.update_cell(1, 1, a1_value)
+except Exception as e:
+    print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
+# === A1: fecha visible en la hoja ===
+# Intentamos usar el viernes de referencia (exp) de OI.
+# Si no hay 'exp' en ningún ticker, usamos un fallback calculado por calendario.
+viernes_ref_global = next((row[4] for row in datos if row[4]), None)
 
-    print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
-    print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
+def _calc_friday_from_today(pos_index: int) -> str:
+    # pos_index=0 -> próximo viernes; 1 -> viernes de la siguiente semana, etc.
+    base = now_ny.date()
+    days_to_fri = (4 - base.weekday()) % 7  # 0=lun ... 4=vie
+    if days_to_fri == 0:
+        days_to_fri = 7  # si hoy es viernes, que sea el próximo
+    first_friday = base + _td(days=days_to_fri)
+    target = first_friday + _td(days=7 * pos_index)
+    return target.strftime("%Y-%m-%d")
 
-    # --- recolecta datos ---
-    datos, resumen = [], []
-    for tk in TICKERS:
-        oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
-        datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
-        datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
-        time.sleep(0.15)
+title_norm = ws.title.strip().lower()
+if title_norm == "semana siguiente":
+    # usa exp real si lo obtuvimos; si no, cae al viernes calculado con posicion_fecha
+    a1_value = viernes_ref_global or _calc_friday_from_today(posicion_fecha)
+else:
+    # semana actual -> muestra la fecha de toma (hoy NY)
+    a1_value = fecha_txt
 
-    # --- agrega por ticker ---
+try:
+    print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp={viernes_ref_global})", flush=True)
+    ws.update_cell(1, 1, a1_value)
+except Exception as e:
+    print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
+
+        # --- agrega por ticker ---
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
         agg[tk]["EXP"] = agg[tk]["EXP"] or exp
