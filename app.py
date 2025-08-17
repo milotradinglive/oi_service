@@ -267,38 +267,37 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # === A1: fecha visible en la hoja ===
-    # Si es "Semana siguiente", usa el viernes de referencia (exp); si falta, calcula fallback.
+        # === A1: fecha visible en la hoja ===
     # Para "Semana siguiente": usar el ÚLTIMO día con OI (máxima expiración vista en datos)
-exp_dates = []
-for r in datos:
-    exp_val = r[4]
-    if exp_val:
-        try:
-            exp_dates.append(_dt.strptime(exp_val, "%Y-%m-%d").date())
-        except:
-            pass
-ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
+    exp_dates = []
+    for r in datos:
+        exp_val = r[4]
+        if exp_val:
+            try:
+                exp_dates.append(_dt.strptime(exp_val, "%Y-%m-%d").date())
+            except:
+                pass
+    ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
 
-    def _calc_friday_from_today(pos_index: int) -> str:
-        # pos_index=0 -> próximo viernes; 1 -> viernes de la semana siguiente, etc.
+
+        def _calc_friday_from_today(pos_index: int) -> str:
         base = now_ny.date()
-        days_to_fri = (4 - base.weekday()) % 7  # 0=lun ... 4=vie
+        days_to_fri = (4 - base.weekday()) % 7
         if days_to_fri == 0:
-            days_to_fri = 7  # si hoy es viernes, tomar el próximo
+            days_to_fri = 7
         first_friday = base + _td(days=days_to_fri)
         target = first_friday + _td(days=7 * pos_index)
         return target.strftime("%Y-%m-%d")
 
     title_norm = ws.title.strip().lower()
-if title_norm == "semana siguiente":
-    a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
-else:
-    a1_value = fecha_txt
+    if title_norm == "semana siguiente":
+        a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
+    else:
+        a1_value = fecha_txt
 
-    try:
-        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp_max={ultima_exp_str})", flush=True)
+    print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (exp_max={ultima_exp_str})", flush=True)
+
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
