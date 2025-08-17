@@ -619,10 +619,7 @@ def _ensure_groups_only_on_file():
     if commenter_grp and not have_commenter:
         _attach_group(commenter_grp, "commenter")
 
-    if commenter_grp and not have_commenter:
-        _attach_group(commenter_grp, "commenter")
-
-# --- NUEVO: quitar miembro de grupo (top-level) ---
+   # --- NUEVO: quitar miembro de grupo (top-level) ---
 def remove_member(directory, group_email, user_email):
     """Quita user_email del grupo group_email si existe."""
     if not directory or not group_email or not user_email:
