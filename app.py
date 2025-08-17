@@ -12,6 +12,14 @@ from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+APP_VERSION = os.getenv("RENDER_GIT_COMMIT", "")[:7] or "dev"
+print(f"🚀 Iniciando oi-updater versión {APP_VERSION}", flush=True)
+
+@app.get("/")
+def root():
+    return jsonify({"status": "ok", "service": "oi-updater", "version": APP_VERSION,
+                    "time": datetime.utcnow().isoformat() + "Z"})
+
 # ========= Config =========
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
