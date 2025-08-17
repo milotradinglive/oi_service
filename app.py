@@ -756,6 +756,19 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
 
     # === NUEVO: limpiar usuarios individuales y asegurar solo grupos en el archivo ===
     _ensure_groups_only_on_file()
+   
+    def remove_member(directory, group_email, user_email):
+    """Quita user_email del grupo group_email si existe."""
+    if not directory or not group_email or not user_email:
+        return "skip"
+    try:
+        directory.members().delete(groupKey=group_email, memberKey=user_email).execute()
+        return "ok"
+    except HttpError as e:
+        msg = str(e).lower()
+        if "not found" in msg or "resource not found" in msg:
+            return "not_member"
+        raise
 
     try:
         from google.oauth2.service_account import Credentials as SACreds
@@ -851,7 +864,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
 def procesar_autorizados(accesos_doc, main_file_url):
     mode = os.getenv("ACCESS_MODE","drive").strip().lower()
     if mode == "groups":
-        return procesar_autorizados_groups(accesos_doc, main_file_url)
     return procesar_autorizados_drive(accesos_doc, main_file_url)
 
 # ========= Runner de UNA corrida =========
