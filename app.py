@@ -631,7 +631,7 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print("ℹ️ AUTORIZADOS vacío.")
         return {"activados": 0, "revocados": 0}
 
-    # === Enforce: solo grupos en el archivo y sin usuarios individuales ===
+    # Enforce: solo grupos en el archivo y sin usuarios individuales
     _ensure_groups_only_on_file()
 
     try:
@@ -656,9 +656,21 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
 
         GROUP_READER_EMAIL = os.getenv("GROUP_READER_EMAIL", "accesos-lectores@milotradinglive.com")
         GROUP_COMMENTER_EMAIL = os.getenv("GROUP_COMMENTER_EMAIL", "accesos-comentadores@milotradinglive.com")
-        def grupo_para_rol(rol): return GROUP_COMMENTER_EMAIL if (rol or "reader").lower()=="commenter" else GROUP_READER_EMAIL
+        def grupo_para_rol(rol):
+            return GROUP_COMMENTER_EMAIL if (rol or "reader").lower() == "commenter" else GROUP_READER_EMAIL
 
-       
+        def add_member(group_email, user_email):
+            if not directory:
+                return "skip"
+            try:
+                directory.members().insert(groupKey=group_email, body={"email": user_email, "role": "MEMBER"}).execute()
+                return "ok"
+            except HttpError as e:
+                msg = str(e).lower()
+                if any(s in msg for s in ("duplicate", "memberexists", "already exists")):
+                    return "ya_miembro"
+                raise
+
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
@@ -669,17 +681,20 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
             sa_email = ""
 
         for i, raw in enumerate(rows[1:], start=2):
-            row = (raw + [""]*8)[:8]
+            row = (raw + [""] * 8)[:8]
             email, dur_txt, rol, creado, expira, estado, perm_id, nota = [(c or "").strip() for c in row]
-            if not any([email, dur_txt, rol, creado, expira, estado, perm_id, nota]): 
+            if not any([email, dur_txt, rol, creado, expira, estado, perm_id, nota]):
                 continue
+
+            # ignora la service account si aparece en la hoja
             if sa_email and email.lower() == sa_email:
                 if nota != "IGNORADO (service account)":
                     hoja_aut.update(values=[["IGNORADO (service account)"]], range_name=f"H{i}")
                 continue
 
             r = (rol or "reader").lower()
-            if r not in ("reader","commenter"): r = "reader"
+            if r not in ("reader", "commenter"):
+                r = "reader"
             est = (estado or "").lower()
             grupo = grupo_para_rol(r)
 
@@ -691,13 +706,12 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
                 hoja_aut.update(values=[[now_iso, exp_dt.isoformat(timespec="seconds"), "ACTIVO", f"group:{grupo}"]], range_name=f"D{i}:G{i}")
                 hoja_aut.update(values=[[f"Miembro en {grupo}. Link: {main_file_url}"]], range_name=f"H{i}")
                 activados += 1
-                print(("✅ ACTIVADO " if result=="ok" else "ℹ️ (Idempotente) ") + f"{email} en {grupo} hasta {exp_dt} UTC")
+                print(("✅ ACTIVADO " if result == "ok" else "ℹ️ (Idempotente) ") + f"{email} en {grupo} hasta {exp_dt} UTC")
                 time.sleep(1.0)
                 continue
 
             # ------- REVOCADO MANUAL -------
             if est == "revocado":
-                # intentamos sacarlo de ambos grupos por seguridad
                 r1 = remove_member(directory, GROUP_READER_EMAIL, email)
                 r2 = remove_member(directory, GROUP_COMMENTER_EMAIL, email)
                 hoja_aut.update(values=[[f"Revocado (manual) — {r1}/{r2}"]], range_name=f"H{i}")
@@ -707,7 +721,7 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
             # ------- ACTIVO: chequear vencimiento -------
             if est == "activo" and expira:
                 try:
-                    exp_dt = datetime.fromisoformat(expira.replace("Z",""))
+                    exp_dt = datetime.fromisoformat(expira.replace("Z", ""))
                     if exp_dt.tzinfo is None:
                         exp_dt = exp_dt.replace(tzinfo=timezone.utc)
                 except Exception:
@@ -715,7 +729,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
                     continue
 
                 if now_utc >= exp_dt:
-                    # quita de ambos grupos por seguridad
                     r1 = remove_member(directory, GROUP_READER_EMAIL, email)
                     r2 = remove_member(directory, GROUP_COMMENTER_EMAIL, email)
                     hoja_aut.update(values=[["REVOCADO"]], range_name=f"F{i}")
@@ -728,7 +741,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
     except Exception as e:
         print(f"⚠️ procesar_autorizados_groups: {e}")
         return {"activados": 0, "revocados": 0}
-
 
 def procesar_autorizados_groups(accesos_doc, main_file_url):
     try:
