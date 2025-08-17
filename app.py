@@ -203,8 +203,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # Debug UTC/NY en hoja (N1:O2) y logs
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     ws.update(values=[["DEBUG_UTC", f"{now_utc:%Y-%m-%d %H:%M:%S}"],
-                      ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
-              range_name="N1:O2")
+                  ["DEBUG_NY",  f"{now_ny:%Y-%m-%d %H:%M:%S}"]],
+          range_name="N1:O2")
 
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})")
     datos, resumen = [], []
