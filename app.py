@@ -49,12 +49,11 @@ def _acquire_lock():
     Intenta tomar un candado de archivo no bloqueante.
     Devuelve el file handle si lo obtiene, o None si ya hay otra ejecución corriendo.
     """
-    f = open(LOCK_FILE, "w")
+    f = open(LOCK_FILE, "a+")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # Opcional: escribir el PID para debug
         try:
-            f.truncate(0)
+            f.seek(0); f.truncate(0)
             f.write(str(os.getpid()))
             f.flush()
         except Exception:
@@ -683,8 +682,6 @@ def _authorized(req: request) -> bool:
     if not OI_SECRET: return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
 
-_update_lock = threading.Lock()  # puedes dejarlo, pero el lock "real" será el de archivo
-
 def _run_guarded():
     file_lock = _acquire_lock()
     if not file_lock:
@@ -742,6 +739,13 @@ def http_run():
 def http_apply_access():
     if not _authorized(request):
         return jsonify({"error": "unauthorized"}), 401
+
+    file_lock = _acquire_lock()
+    if not file_lock:
+        msg = "ya hay una ejecución en curso"
+        print(f"⏳ [/apply_access] {msg}", flush=True)
+        return jsonify({"ok": False, "running": True, "msg": msg}), 409
+
     try:
         print("➡️  [/apply_access] inicio", flush=True)
         accesos = client.open_by_key(ACCESS_FILE_ID)
@@ -749,10 +753,9 @@ def http_apply_access():
         acc = procesar_autorizados(accesos, main_url)
         print(f"✅ [/apply_access] ok: {acc}", flush=True)
         return jsonify({"ok": True, **acc}), 200
-    except Exception as e:
-        traceback.print_exc()
-        print(f"❌ [/apply_access] error: {e}", flush=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        fcntl.flock(file_lock, fcntl.LOCK_UN)
+        file_lock.close()
 
 
 if __name__ == "__main__":
