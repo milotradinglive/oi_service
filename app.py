@@ -658,26 +658,22 @@ def _authorized(req: request) -> bool:
     if not OI_SECRET: return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
 
-_update_lock = threading.Lock()
-_is_running = False
+_update_lock = threading.Lock()  # puedes dejarlo, pero el lock "real" será el de archivo
 
 def _run_guarded():
-    global _is_running
+    file_lock = _acquire_lock()
+    if not file_lock:
+        print("⏳ [/update] Ya hay una ejecución en curso (lock inter-proceso); se omite.", flush=True)
+        return
     try:
-        with _update_lock:
-            if _is_running:
-                print("⏳ [/update] Ya hay una ejecución en curso; se omite.", flush=True)
-                return
-            _is_running = True
-
         print("🚀 [update] Inicio actualización OI", flush=True)
         run_once()
         print("✅ [update] Fin actualización OI", flush=True)
-
     except Exception as e:
         print(f"❌ [/update] Error: {repr(e)}", flush=True)
     finally:
-        _is_running = False
+        fcntl.flock(file_lock, fcntl.LOCK_UN)
+        file_lock.close()
         print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
 
 @app.get("/healthz")
@@ -697,13 +693,26 @@ def http_run():
     try:
         skip = request.args.get("skip_oi", "").strip().lower() in ("1", "true", "yes")
         print(f"➡️  [/run] inicio (skip_oi={skip})", flush=True)
-        result = run_once(skip_oi=skip)
-        print(f"✅ [/run] ok: {result}", flush=True)
-        return jsonify(result), 200
+
+        file_lock = _acquire_lock()
+        if not file_lock:
+            msg = "ya hay una ejecución en curso"
+            print(f"⏳ [/run] {msg}", flush=True)
+            return jsonify({"ok": False, "running": True, "msg": msg}), 409
+
+        try:
+            result = run_once(skip_oi=skip)
+            print(f"✅ [/run] ok: {result}", flush=True)
+            return jsonify(result), 200
+        finally:
+            fcntl.flock(file_lock, fcntl.LOCK_UN)
+            file_lock.close()
+
     except Exception as e:
         traceback.print_exc()
         print(f"❌ [/run] error: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.get("/apply_access")
 def http_apply_access():
     if not _authorized(request):
