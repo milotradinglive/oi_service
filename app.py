@@ -436,9 +436,6 @@ def run_once():
     }
 
 # ========= Flask app =========
-app = Flask(__name__)
-OI_SECRET = os.getenv("OI_SECRET", "").strip()
-
 def _authorized(req: request) -> bool:
     if not OI_SECRET: return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
