@@ -351,7 +351,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         # Fecha por fila = expiración usada para ese ticker (fallback a A1 y luego a la fecha de hoy)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-                 resumen.append([
+        resumen.append([
             exp_fila, hora_txt, tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
