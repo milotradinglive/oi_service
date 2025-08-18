@@ -576,7 +576,7 @@ def _ensure_groups_only_on_file():
         fileId=MAIN_FILE_ID, fields="permissions(id,emailAddress,role,type)"
     ).execute().get("permissions", [])
 
-    sa_email = _get_sa_email_from_env_info()  # ← ya existe en tu código
+    sa_email = _get_sa_email_from_env_info()
     have_reader = False
     have_commenter = False
 
@@ -586,83 +586,24 @@ def _ensure_groups_only_on_file():
         p_mail = S(p.get("emailAddress")).lower()
         p_role = S(p.get("role")).lower()
 
-        # Marca si ya están los grupos
+        # Detecta si ya están los grupos
         if p_type == "group":
             if p_mail == reader_grp:    have_reader = True
             if p_mail == commenter_grp: have_commenter = True
 
-        # Solo borrar USERS que no sean el owner/organizer ni el service account
+        # Solo borrar USERS que no sean owner/organizer ni el service account
         if p_type == "user" and p_id:
             if p_role in ("owner", "organizer"):
-                print(f"🔒 Mantengo OWNER/ORGANIZER {p_mail}"); 
+                print(f"🔒 Mantengo OWNER/ORGANIZER {p_mail}")
                 continue
             if sa_email and p_mail == sa_email:
-                print(f"🔒 Mantengo Service Account {p_mail}");
+                print(f"🔒 Mantengo Service Account {p_mail}")
                 continue
             try:
                 drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=p_id).execute()
                 print(f"🧹 Borrado permiso USER {p_mail}")
             except Exception as e:
                 print(f"⚠️ No pude borrar USER {p_mail}: {e}")
-
-    def _attach_group(group_email, role):
-        if not group_email: return
-        try:
-            drive.permissions().create(
-                fileId=MAIN_FILE_ID,
-                body={"type": "group", "role": role, "emailAddress": group_email},
-                fields="id",
-                sendNotificationEmail=False
-            ).execute()
-            print(f"✅ Adjuntado grupo {group_email} como {role}")
-        except HttpError as e:
-            msg = str(e).lower()
-            if "alreadyexists" in msg or "duplicate" in msg:
-                print(f"ℹ️ Grupo {group_email} ya estaba adjunto")
-            else:
-                raise
-
-    if reader_grp and not have_reader:
-        _attach_group(reader_grp, "reader")
-    if commenter_grp and not have_commenter:
-        _attach_group(commenter_grp, "commenter")
-
-    # Asegura que el service account tenga editor (writer)
-    if sa_email and all(S(p.get("emailAddress")).lower() != sa_email for p in perms):
-        try:
-            drive.permissions().create(
-                fileId=MAIN_FILE_ID,
-                body={"type": "user", "role": "writer", "emailAddress": sa_email},
-                fields="id",
-                sendNotificationEmail=False
-            ).execute()
-            print(f"✅ Agregado Service Account {sa_email} como writer")
-        except Exception as e:
-            print(f"⚠️ No pude agregar SA {sa_email}: {e}")
-
-        perms = drive.permissions().list(
-        fileId=MAIN_FILE_ID, fields="permissions(id,emailAddress,role,type)"
-    ).execute().get("permissions", [])
-
-    have_reader = False
-    have_commenter = False
-
-    for p in perms:
-        p_type = S(p.get("type")).lower()
-        p_id   = S(p.get("id"))
-        p_mail = S(p.get("emailAddress")).lower()
-        if p_type == "user" and p_id:
-            try:
-                drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=p_id).execute()
-                print(f"🧹 Borrado permiso USER {p_mail}")
-            except Exception as e:
-                print(f"⚠️ No pude borrar USER {p_mail}: {e}")
-
-        if p_type == "group":
-            if p_mail == reader_grp:
-                have_reader = True
-            if p_mail == commenter_grp:
-                have_commenter = True
 
     def _attach_group(group_email, role):
         if not group_email:
@@ -682,10 +623,24 @@ def _ensure_groups_only_on_file():
             else:
                 raise
 
+    # Adjunta grupos si faltan
     if reader_grp and not have_reader:
         _attach_group(reader_grp, "reader")
     if commenter_grp and not have_commenter:
         _attach_group(commenter_grp, "commenter")
+
+    # Asegura que el service account tenga editor (writer)
+    if sa_email and all(S(p.get("emailAddress")).lower() != sa_email for p in perms):
+        try:
+            drive.permissions().create(
+                fileId=MAIN_FILE_ID,
+                body={"type": "user", "role": "writer", "emailAddress": sa_email},
+                fields="id",
+                sendNotificationEmail=False
+            ).execute()
+            print(f"✅ Agregado Service Account {sa_email} como writer")
+        except Exception as e:
+            print(f"⚠️ No pude agregar SA {sa_email}: {e}")
 
 # --- NUEVO: quitar miembro de grupo (top-level) ---
 def remove_member(directory, group_email, user_email):
