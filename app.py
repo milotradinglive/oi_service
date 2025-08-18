@@ -321,21 +321,25 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
 
-        total_m = m_call + m_put
-        if total_m == 0:
-            pct_c = pct_p = fuerza = 0.0
+                # --- Diferencia porcentual normalizada (dinero CALL vs PUT) ---
+        if m_call <= 0 and m_put <= 0:
+            diff_m = fuerza = 0.0
         else:
-            pct_c = round(100 * m_call / total_m, 1)
-            pct_p = round(100 - pct_c, 1)
-            fuerza = pct_c if pct_c > pct_p else -pct_p
+            try:
+                diff_m = (m_call - m_put) / max(m_call, m_put) * 100
+            except ZeroDivisionError:
+                diff_m = 0.0
+            fuerza = diff_m
 
-        total_vol = v_call + v_put
-        if total_vol == 0:
-            pct_vc = pct_vp = fuerza_vol = 0.0
+                # --- Diferencia porcentual normalizada (volumen CALL vs PUT) ---
+        if v_call <= 0 and v_put <= 0:
+            diff_v = fuerza_vol = 0.0
         else:
-            pct_vc = round(100 * v_call / total_vol, 1)
-            pct_vp = round(100 - pct_vc, 1)
-            fuerza_vol = pct_vc if pct_vc > pct_vp else -pct_vp
+            try:
+                diff_v = (v_call - v_put) / max(v_call, v_put) * 100
+            except ZeroDivisionError:
+                diff_v = 0.0
+            fuerza_vol = diff_v
 
         color_oi  = "🟢" if fuerza >= 20 else "🔴" if fuerza <= -20 else "⚪"
         color_vol = "🟢" if fuerza_vol >= 20 else "🔴" if fuerza_vol <= -20 else "⚪"
@@ -355,7 +359,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             exp_fila, hora_txt, tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-            pct_str(pct_c), pct_str(pct_p),
+            pct_str(diff_m), pct_str(diff_v),
             color_oi, color_vol, pct_str(fuerza), color_final
         ])
 
