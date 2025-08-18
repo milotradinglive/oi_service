@@ -365,12 +365,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     # Encabezado + cuerpo
     encabezado = [[
-        "Fecha","Hora","Ticker",
-        "RELATIVE VERDE","RELATIVE ROJO",
-        "VOLUMEN ENTRA","VOLUMEN SALE",
-        "%SUBIDA","%BAJADA",
-        "INTENCION","VOLUMEN","Fuerza","Relación"
-    ]]
+    "Fecha","Hora","Ticker",
+    "RELATIVE VERDE","RELATIVE ROJO",
+    "VOLUMEN ENTRA","VOLUMEN SALE",
+    "%Δ DINERO NORM.","%Δ VOLUMEN NORM.",
+    "INTENCION","VOLUMEN","Fuerza","Relación"
+]]
     ws.update(values=encabezado, range_name="A2:M2")
     ws.batch_clear(["A3:M1000"])
 
