@@ -341,12 +341,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_v = 0.0
             fuerza_vol = diff_v
 
-                # Solo color verde si valor positivo, rojo si negativo
+                 # Solo color verde si valor positivo, rojo si negativo
         color_oi  = "🟢" if fuerza > 0 else "🔴"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴"
 
-        # Color final: mismo criterio, basado en fuerza total
-        color_final = "🟢" if fuerza > 0 else "🔴"
+        # Relación (M) = “suma” de las dos bolitas (J + K)
+        color_final = color_oi + color_vol
 
         # Fecha por fila = expiración usada para ese ticker (fallback a A1 y luego a la fecha de hoy)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
