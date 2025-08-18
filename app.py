@@ -351,15 +351,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         # Fecha por fila = expiración usada para ese ticker (fallback a A1 y luego a la fecha de hoy)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-                # Fuerza = promedio de H (diff_m) e I (diff_v)
-        fuerza_avg = (diff_m + diff_v) / 2
-
-        resumen.append([
+                 resumen.append([
             exp_fila, hora_txt, tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
             pct_str(diff_m), pct_str(diff_v),
-            color_oi, color_vol, pct_str(fuerza_avg), color_final
+            color_oi, color_vol, pct_str(fuerza), color_final
         ])
 
     # Encabezado + cuerpo
