@@ -1,18 +1,18 @@
 # app.py
-import os, time, json, traceback
+import os, time, json, traceback, re, fcntl
 from datetime import datetime, timedelta, timezone
+from dateutil import parser as dtparser
 import pytz
 import threading
 from collections import defaultdict as _dd
+
 import gspread
 import requests
-import re
-import fcntl  
-
 from flask import Flask, jsonify, request
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from gspread.exceptions import WorksheetNotFound
 
 # ========= Flask app =========
 app = Flask(__name__)
@@ -37,7 +37,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
 # IDs por entorno (defaults para STAGING)
 MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID",   "18sxVJ-8ChEt09DR9HxyteK4fWdbyxEJ12fkSDIbvtDA")
 ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1CY06Lw1QYZQEXuMO02EPe8vUOipizuhbWypffPETPyk")
-ACCESS_SHEET_TITLE = "AUTORIZADOS"
+ACCESS_SHEET_TITLE = os.getenv("ACCESS_SHEET_TAB", "AUTORIZADOS")
 
 TRADIER_TOKEN  = os.getenv("TRADIER_TOKEN", "")
 
@@ -63,7 +63,6 @@ def _acquire_lock():
         f.close()
         return None
 
-
 # ========= Auth desde variable de entorno =========
 def make_gspread_and_creds():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
@@ -88,7 +87,10 @@ TIMEOUT = 12
 
 # ========= Sesión HTTP Tradier =========
 session = requests.Session()
-session.headers.update({"Authorization": f"Bearer {TRADIER_TOKEN}", "Accept": "application/json"})
+if TRADIER_TOKEN:
+    session.headers.update({"Authorization": f"Bearer {TRADIER_TOKEN}", "Accept": "application/json"})
+else:
+    session.headers.update({"Accept": "application/json"})
 
 def get_json(url, params=None, max_retries=3):
     for intento in range(1, max_retries+1):
@@ -230,9 +232,6 @@ def obtener_dinero(ticker, posicion_fecha=0):
         return 0, 0, 0.0, 0.0, 0, 0, None
 
 # ========= Escritura en Google Sheets (OI) =========
-from gspread.exceptions import WorksheetNotFound
-from datetime import datetime as _dt, timedelta as _td
-
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # Abre o crea la hoja si no existe
     try:
@@ -243,7 +242,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             "Fecha","Hora","Ticker",
             "RELATIVE VERDE","RELATIVE ROJO",
             "VOLUMEN ENTRA","VOLUMEN SALE",
-            "%SUBIDA","%BAJADA",
+            "%Δ DINERO NORM.","%Δ VOLUMEN NORM.",
             "INTENCION","VOLUMEN","Fuerza","Relación"
         ]], range_name="A2:M2")
 
@@ -267,7 +266,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         time.sleep(0.15)
 
     # === A1: fecha visible en la hoja ===
-    # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
     exp_dates = []
     for _, _, _, _, exp_vto, _ in datos:
         if exp_vto:
@@ -292,12 +290,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     else:
         a1_value = fecha_txt
 
-    # A1: escribir la fecha (última expiración o viernes calculado)
     try:
-        print(
-            f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})",
-            flush=True
-        )
+        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
@@ -321,7 +315,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
 
-                # --- Diferencia porcentual normalizada (dinero CALL vs PUT) ---
+        # --- Diferencia porcentual normalizada (dinero CALL vs PUT) ---
         if m_call <= 0 and m_put <= 0:
             diff_m = fuerza = 0.0
         else:
@@ -331,7 +325,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_m = 0.0
             fuerza = diff_m
 
-                # --- Diferencia porcentual normalizada (volumen CALL vs PUT) ---
+        # --- Diferencia porcentual normalizada (volumen CALL vs PUT) ---
         if v_call <= 0 and v_put <= 0:
             diff_v = fuerza_vol = 0.0
         else:
@@ -341,7 +335,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_v = 0.0
             fuerza_vol = diff_v
 
-                 # Solo color verde si valor positivo, rojo si negativo
+        # Solo color verde si valor positivo, rojo si negativo
         color_oi  = "🟢" if fuerza > 0 else "🔴"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴"
 
@@ -361,12 +355,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     # Encabezado + cuerpo
     encabezado = [[
-    "Fecha","Hora","Ticker",
-    "RELATIVE VERDE","RELATIVE ROJO",
-    "VOLUMEN ENTRA","VOLUMEN SALE",
-    "%Δ DINERO NORM.","%Δ VOLUMEN NORM.",
-    "INTENCION","VOLUMEN","Fuerza","Relación"
-]]
+        "Fecha","Hora","Ticker",
+        "RELATIVE VERDE","RELATIVE ROJO",
+        "VOLUMEN ENTRA","VOLUMEN SALE",
+        "%Δ DINERO NORM.","%Δ VOLUMEN NORM.",
+        "INTENCION","VOLUMEN","Fuerza","Relación"
+    ]]
     ws.update(values=encabezado, range_name="A2:M2")
     ws.batch_clear(["A3:M1000"])
 
@@ -413,7 +407,7 @@ def _col_indexes(ws):
         "nota":       col("nota"),
     }
 
-# ========= ACCESOS — modo DRIVE (igual a apply_access.py) =========
+# ========= ACCESOS — modo DRIVE =========
 def _parse_duration_drive(s: str) -> timedelta:
     s = S(s).lower()
     if not s: return timedelta(hours=24)
@@ -424,6 +418,15 @@ def _parse_duration_drive(s: str) -> timedelta:
         try: total_h = float(s)
         except: total_h = 24.0
     return timedelta(hours=total_h)
+
+def _get_sa_email_from_env_info() -> str:
+    try:
+        return S(_creds_info.get("client_email","")).lower()
+    except:
+        try:
+            return S(json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","")).lower()
+        except:
+            return ""
 
 def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=True, email_message=None):
     base = {"type": "user", "role": role, "emailAddress": email}
@@ -450,15 +453,6 @@ def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=
 
 def _revoke_by_id(perm_id: str):
     drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=perm_id).execute()
-
-def _get_sa_email_from_env_info() -> str:
-    try:
-        return S(_creds_info.get("client_email","")).lower()
-    except:
-        try:
-            return S(json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","")).lower()
-        except:
-            return ""
 
 def procesar_autorizados_drive(accesos_doc, main_file_url):
     hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
@@ -559,7 +553,7 @@ def procesar_autorizados_drive(accesos_doc, main_file_url):
     print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
     return {"activados": activados, "revocados": revocados}
 
-# ========= ACCESOS — modo GROUPS (tu versión original) =========
+# ========= ACCESOS — modo GROUPS =========
 def _parse_duration_groups(txt):
     txt = (txt or "").strip().lower()
     if txt.endswith("h"): return timedelta(hours=int(txt[:-1] or 24))
@@ -567,7 +561,6 @@ def _parse_duration_groups(txt):
     if txt.endswith("w"): return timedelta(weeks=int(txt[:-1] or 1))
     return timedelta(hours=24)
 
-# === NUEVO: enforcement de permisos solo grupos ===
 def _ensure_groups_only_on_file():
     reader_grp = os.getenv("GROUP_READER_EMAIL", "").strip().lower()
     commenter_grp = os.getenv("GROUP_COMMENTER_EMAIL", "").strip().lower()
@@ -586,12 +579,10 @@ def _ensure_groups_only_on_file():
         p_mail = S(p.get("emailAddress")).lower()
         p_role = S(p.get("role")).lower()
 
-        # Detecta si ya están los grupos
         if p_type == "group":
             if p_mail == reader_grp:    have_reader = True
             if p_mail == commenter_grp: have_commenter = True
 
-        # Solo borrar USERS que no sean owner/organizer ni el service account
         if p_type == "user" and p_id:
             if p_role in ("owner", "organizer"):
                 print(f"🔒 Mantengo OWNER/ORGANIZER {p_mail}")
@@ -623,13 +614,11 @@ def _ensure_groups_only_on_file():
             else:
                 raise
 
-    # Adjunta grupos si faltan
     if reader_grp and not have_reader:
         _attach_group(reader_grp, "reader")
     if commenter_grp and not have_commenter:
         _attach_group(commenter_grp, "commenter")
 
-    # Asegura que el service account tenga editor (writer)
     if sa_email and all(S(p.get("emailAddress")).lower() != sa_email for p in perms):
         try:
             drive.permissions().create(
@@ -642,9 +631,7 @@ def _ensure_groups_only_on_file():
         except Exception as e:
             print(f"⚠️ No pude agregar SA {sa_email}: {e}")
 
-# --- NUEVO: quitar miembro de grupo (top-level) ---
 def remove_member(directory, group_email, user_email):
-    """Quita user_email del grupo group_email si existe."""
     if not directory or not group_email or not user_email:
         return "skip"
     try:
@@ -668,7 +655,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print("ℹ️ AUTORIZADOS vacío.")
         return {"activados": 0, "revocados": 0}
 
-    # Enforce: solo grupos en el archivo y sin usuarios individuales
     _ensure_groups_only_on_file()
 
     try:
@@ -711,7 +697,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         activados = revocados = 0
         now_utc = datetime.now(timezone.utc)
 
-        sa_email = ""
         try:
             sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON","")).get("client_email","").lower()
         except:
@@ -723,7 +708,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
             if not any([email, dur_txt, rol, creado, expira, estado, perm_id, nota]):
                 continue
 
-            # ignora la service account si aparece en la hoja
             if sa_email and email.lower() == sa_email:
                 if nota != "IGNORADO (service account)":
                     hoja_aut.update(values=[["IGNORADO (service account)"]], range_name=f"H{i}")
@@ -779,7 +763,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print(f"⚠️ procesar_autorizados_groups: {e}")
         return {"activados": 0, "revocados": 0}
 
-
 # ========= Wrapper: elige modo por ENV =========
 def procesar_autorizados(accesos_doc, main_file_url):
     mode = os.getenv("ACCESS_MODE","drive").strip().lower()
@@ -809,7 +792,6 @@ def run_once(skip_oi: bool = False):
         "mode": os.getenv("ACCESS_MODE","drive"),
         "skipped_oi": skip_oi,
     }
-
 
 # ========= Flask async guards =========
 def _authorized(req: request) -> bool:
@@ -890,7 +872,6 @@ def http_apply_access():
     finally:
         fcntl.flock(file_lock, fcntl.LOCK_UN)
         file_lock.close()
-
 
 if __name__ == "__main__":
     # Para pruebas locales: http://127.0.0.1:8080/run
