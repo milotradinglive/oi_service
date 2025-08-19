@@ -1,0 +1,121 @@
+# app.py — Enforcer de permisos Drive leyendo la hoja ACCESOS
+import os, json
+from datetime import datetime
+from dateutil import parser as dtparser
+
+from flask import Flask, request, jsonify, abort
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+APP = Flask(__name__)
+OI_SECRET       = os.getenv("OI_SECRET", "").strip()
+ACCESS_FILE_ID  = os.getenv("ACCESS_FILE_ID", "").strip()   # Tabla Institucional (archivo en Drive)
+ACCESS_SHEET_ID = os.getenv("ACCESS_SHEET_ID", "").strip()  # Spreadsheet donde está la hoja ACCESOS
+LOG_SHEET_TAB   = os.getenv("LOG_SHEET_TAB", "APERTURAS")   # opcional
+SHEET_NAME      = os.getenv("ACCESS_SHEET_TAB", "ACCESOS")  # nombre de la pestaña ACCESOS
+
+# === Google Auth (Sheets + Drive) ===
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive"]
+def _get_creds():
+    raw = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    if not raw:
+        raise RuntimeError("Falta GOOGLE_CREDENTIALS_JSON")
+    info = json.loads(raw)
+    return ServiceAccountCredentials.from_json_keyfile_dict(info, SCOPES)
+
+def _open_sheet():
+    creds = _get_creds()
+    client = gspread.authorize(creds)
+    sh = client.open_by_key(ACCESS_SHEET_ID)
+    return sh.worksheet(SHEET_NAME), client
+
+def _drive():
+    creds = _get_creds()
+    return build("drive", "v3", credentials=creds)
+
+def _list_permissions(drive, file_id):
+    perms = drive.permissions().list(fileId=file_id, fields="permissions(id,emailAddress,role,type)").execute()
+    return perms.get("permissions", [])
+
+def _ensure_reader(drive, file_id, email):
+    # Si ya existe permiso de ese email, no crea duplicado
+    perms = _list_permissions(drive, file_id)
+    for p in perms:
+        if p.get("emailAddress", "").lower() == email.lower():
+            return p.get("id")
+    body = {"role": "reader", "type": "user", "emailAddress": email}
+    res = drive.permissions().create(fileId=file_id, body=body, sendNotificationEmail=False).execute()
+    return res.get("id")
+
+def _revoke(drive, file_id, email):
+    perms = _list_permissions(drive, file_id)
+    for p in perms:
+        if p.get("emailAddress", "").lower() == email.lower():
+            try:
+                drive.permissions().delete(fileId=file_id, permissionId=p["id"]).execute()
+            except HttpError:
+                pass
+            return True
+    return False
+
+@APP.get("/apply_access")
+def apply_access():
+    # Seguridad simple con secret
+    if request.args.get("secret", "") != OI_SECRET:
+        abort(403)
+    ws, _ = _open_sheet()
+    drive = _drive()
+
+    rows = ws.get_all_records()  # asume fila 1 headers
+    now = datetime.utcnow()
+    activados = revocados = errores = 0
+    details = []
+
+    for i, row in enumerate(rows, start=2):  # datos comienzan en fila 2
+        email = str(row.get("email", "")).strip()
+        estado = str(row.get("estado", "")).strip().upper()
+        vence_el = str(row.get("vence_el", "")).strip()
+        if not email:
+            continue
+
+        # parse fecha (opcional)
+        vence_ok = True
+        if vence_el:
+            try:
+                vencets = dtparser.parse(vence_el)
+                if vencets.tzinfo:
+                    vencets = vencets.astimezone(tz=None).replace(tzinfo=None)
+                if vencets < now:
+                    # vencido → se fuerza revocación
+                    estado = "REVOCADO"
+            except Exception:
+                # fecha mal formateada no detiene el lote
+                pass
+
+        try:
+            if estado in ("ACTIVO", "TRIAL"):
+                _ensure_reader(drive, ACCESS_FILE_ID, email)
+                activados += 1
+                details.append(f"+ {email}")
+            else:
+                if _revoke(drive, ACCESS_FILE_ID, email):
+                    revocados += 1
+                    details.append(f"- {email}")
+        except Exception as e:
+            errores += 1
+            details.append(f"! {email}: {e}")
+
+    return jsonify({
+        "ok": True,
+        "activados": activados,
+        "revocados": revocados,
+        "errores": errores,
+        "detalles": details[:50]  # corto
+    })
+
+@APP.get("/")
+def health():
+    return jsonify({"status": "ok", "service": "access-enforcer"})
