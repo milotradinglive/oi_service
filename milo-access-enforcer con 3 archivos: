@@ -141,3 +141,22 @@ def health():
 def _routes():
     # nos lista TODAS las rutas que realmente corren
     return {"routes": sorted(str(r) for r in APP.url_map.iter_rules())}
+
+# --- Diagnóstico / salud ---
+from flask import jsonify
+
+@APP.get("/")
+def root():
+    return jsonify({"status": "ok", "service": "access-enforcer"})
+
+@APP.get("/health")
+@APP.get("/healthz")
+def health():
+    return jsonify({"status": "ok", "service": "access-enforcer"})
+
+@APP.get("/__routes")
+def _routes():
+    return {"routes": sorted(str(r) for r in APP.url_map.iter_rules())}
+
+# Al iniciar, imprime las rutas (útil en Logs de Render)
+print("ROUTES:", [str(r) for r in APP.url_map.iter_rules()], flush=True)
