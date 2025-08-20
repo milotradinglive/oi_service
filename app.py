@@ -145,6 +145,41 @@ def fmt_entero_miles(x):
 def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
+# === Persistencia del último color (por hoja objetivo) ===
+def _ensure_estado_sheet(doc, nombre_estado: str):
+    """Crea/abre una hoja de estado con columnas: Ticker, ColorOI, ColorVol."""
+    try:
+        ws = doc.worksheet(nombre_estado)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = doc.add_worksheet(title=nombre_estado, rows=400, cols=3)
+        ws.update(values=[["Ticker", "ColorOI", "ColorVol"]], range_name="A1")
+    return ws
+
+def _leer_estado(ws_estado):
+    """Devuelve dict {ticker: (color_oi, color_vol)}"""
+    rows = ws_estado.get_all_values()
+    d = {}
+    for r in rows[1:]:
+        if not r:
+            continue
+        t = (r[0] or "").strip().upper()
+        if not t:
+            continue
+        c_oi = (r[1] or "").strip()
+        c_v  = (r[2] or "").strip()
+        d[t] = (c_oi, c_v)
+    return d
+
+def _escribir_estado(ws_estado, mapa):
+    """Sobrescribe toda la tabla con el último color por ticker."""
+    data = [["Ticker", "ColorOI", "ColorVol"]]
+    for tk in sorted(mapa.keys()):
+        c_oi, c_v = mapa[tk]
+        data.append([tk, c_oi, c_v])
+    ws_estado.batch_clear(["A2:C1000"])
+    if len(data) > 1:
+        ws_estado.update(values=data, range_name=f"A1:C{len(data)}")
+
 
 # ========= Lógica de expiraciones / datos (OI) =========
 from datetime import datetime as _dt, timedelta as _td  # mantener alias usado en tu código
@@ -313,6 +348,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
+    # --- Estado previo por hoja (persiste entre corridas y reinicios)
+    nombre_estado = f"ESTADO__{sheet_title}"
+    ws_estado = _ensure_estado_sheet(doc, nombre_estado)
+    estado_prev = _leer_estado(ws_estado)     # {ticker: (colorOI, colorVol)}
+    estado_nuevo = {}                         # lo llenamos más abajo
+    cambios_por_ticker = {}                   # {tk: (cambio_oi, cambio_vol)}
+
     # --- recolecta datos de OI ---
     datos = []
     for tk in TICKERS:
@@ -400,6 +442,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         color_oi = "🟢" if fuerza > 0 else "🔴"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴"
 
+        # >>> NUEVO: detectar cambios vs. corrida anterior <<<
+        prev_oi, prev_vol = estado_prev.get(tk, ("", ""))
+        cambio_oi = (prev_oi != "") and (prev_oi != color_oi)
+        cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
+        cambios_por_ticker[tk] = (cambio_oi, cambio_vol)
+        estado_nuevo[tk] = (color_oi, color_vol)
+        
         # Relación (M) = “suma” de las dos bolitas (J + K)
         color_final = color_oi + color_vol
 
@@ -442,6 +491,67 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     if resumen:
         ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
+        # --- Formateo: limpiar J/K y resaltar SOLO donde hubo cambio en esta corrida
+        sheet_id = ws.id
+        start_row = 2  # 0-based → corresponde a fila 3
+        total_rows = len(resumen)
+        requests = []
+
+        # 1) Limpia fondos previos de J y K
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "endRowIndex": start_row + total_rows,
+                    "startColumnIndex": 9,   # J
+                    "endColumnIndex": 11     # K (exclusivo)
+                },
+                "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        })
+
+        # 2) Pintar celdas de cambio (amarillo suave)
+        highlight = {"red": 1, "green": 0.98, "blue": 0.75}
+        for idx, row in enumerate(resumen):
+            tk = str(row[2]).strip().upper()
+            ch_oi, ch_vol = cambios_por_ticker.get(tk, (False, False))
+            if ch_oi:
+                requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": start_row + idx,
+                            "endRowIndex": start_row + idx + 1,
+                            "startColumnIndex": 9,
+                            "endColumnIndex": 10
+                        },
+                        "cell": {"userEnteredFormat": {"backgroundColor": highlight}},
+                        "fields": "userEnteredFormat.backgroundColor"
+                    }
+                })
+            if ch_vol:
+                requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": start_row + idx,
+                            "endRowIndex": start_row + idx + 1,
+                            "startColumnIndex": 10,
+                            "endColumnIndex": 11
+                        },
+                        "cell": {"userEnteredFormat": {"backgroundColor": highlight}},
+                        "fields": "userEnteredFormat.backgroundColor"
+                    }
+                })
+
+        if requests:
+            ws.spreadsheet.batch_update({"requests": requests})
+
+        # 3) Guardar estado actual (para comparar en la próxima corrida)
+        _escribir_estado(ws_estado, estado_nuevo)
+
 
     try:
         ws.batch_clear(["N:O"])
