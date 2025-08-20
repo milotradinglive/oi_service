@@ -9,16 +9,14 @@ from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from flask import Flask
-import os
-
 APP = Flask(__name__)
+app = APP  # <<--- alias para gunicorn ("app:app")
 
 # --- Secrets / config ---
 OI_SECRET = os.getenv("OI_SECRET", "").strip()
 
 # --- Archivos ---
-# Archivo principal al que darás acceso (p. ej. "INDICADORES MULTITEMPORALES" en Drive)
+# Archivo principal al que darás acceso (p.ej. “INDICADORES MULTITEMPORALES” en Drive)
 MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID", "").strip()
 
 # Spreadsheet donde está la pestaña con la lista de accesos (ACCESOS)
@@ -29,7 +27,7 @@ ACCESS_SHEET_TAB = (os.getenv("ACCESS_SHEET_TAB") or
                     os.getenv("ACCESS_SHEET") or
                     "ACCESOS").strip()
 
-# Alias por compatibilidad (si tu código usa SHEET_NAME en otras partes)
+# Alias por compatibilidad
 SHEET_NAME = ACCESS_SHEET_TAB
 
 # Hoja opcional de logs
@@ -41,11 +39,10 @@ print(
     flush=True
 )
 
-
-
 # === Google Auth (Sheets + Drive) ===
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
+
 def _get_creds():
     raw = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
     if not raw:
@@ -56,7 +53,8 @@ def _get_creds():
 def _open_sheet():
     creds = _get_creds()
     client = gspread.authorize(creds)
-    sh = client.open_by_key(ACCESS_SHEET_ID)
+    # 👈 ANTES usabas ACCESS_SHEET_ID (nombre que no existe). VA EL ACCESS_FILE_ID
+    sh = client.open_by_key(ACCESS_FILE_ID)
     return sh.worksheet(SHEET_NAME), client
 
 def _drive():
@@ -64,22 +62,25 @@ def _drive():
     return build("drive", "v3", credentials=creds)
 
 def _list_permissions(drive, file_id):
-    perms = drive.permissions().list(fileId=file_id, fields="permissions(id,emailAddress,role,type)").execute()
+    perms = drive.permissions().list(
+        fileId=file_id,
+        fields="permissions(id,emailAddress,role,type)"
+    ).execute()
     return perms.get("permissions", [])
 
 def _ensure_reader(drive, file_id, email):
     # Si ya existe permiso de ese email, no crea duplicado
-    perms = _list_permissions(drive, file_id)
-    for p in perms:
+    for p in _list_permissions(drive, file_id):
         if p.get("emailAddress", "").lower() == email.lower():
             return p.get("id")
     body = {"role": "reader", "type": "user", "emailAddress": email}
-    res = drive.permissions().create(fileId=file_id, body=body, sendNotificationEmail=False).execute()
+    res = drive.permissions().create(
+        fileId=file_id, body=body, sendNotificationEmail=False
+    ).execute()
     return res.get("id")
 
 def _revoke(drive, file_id, email):
-    perms = _list_permissions(drive, file_id)
-    for p in perms:
+    for p in _list_permissions(drive, file_id):
         if p.get("emailAddress", "").lower() == email.lower():
             try:
                 drive.permissions().delete(fileId=file_id, permissionId=p["id"]).execute()
@@ -90,9 +91,11 @@ def _revoke(drive, file_id, email):
 
 @APP.get("/apply_access")
 def apply_access():
-    # Seguridad simple con secret
-    if request.args.get("secret", "") != OI_SECRET:
-        abort(403)
+    # Acepta secreto por Header **o** querystring:
+    secret = request.headers.get("X-Auth-Token") or request.args.get("secret", "")
+    if secret != OI_SECRET:
+        abort(401)
+
     ws, _ = _open_sheet()
     drive = _drive()
 
@@ -109,26 +112,24 @@ def apply_access():
             continue
 
         # parse fecha (opcional)
-        vence_ok = True
         if vence_el:
             try:
                 vencets = dtparser.parse(vence_el)
                 if vencets.tzinfo:
                     vencets = vencets.astimezone(tz=None).replace(tzinfo=None)
                 if vencets < now:
-                    # vencido → se fuerza revocación
                     estado = "REVOCADO"
             except Exception:
-                # fecha mal formateada no detiene el lote
                 pass
 
         try:
             if estado in ("ACTIVO", "TRIAL"):
-                _ensure_reader(drive, ACCESS_FILE_ID, email)
+                # 👈 IMPORTANTE: se da permiso sobre el **MAIN_FILE_ID** (el documento final)
+                _ensure_reader(drive, MAIN_FILE_ID, email)
                 activados += 1
                 details.append(f"+ {email}")
             else:
-                if _revoke(drive, ACCESS_FILE_ID, email):
+                if _revoke(drive, MAIN_FILE_ID, email):
                     revocados += 1
                     details.append(f"- {email}")
         except Exception as e:
@@ -140,9 +141,10 @@ def apply_access():
         "activados": activados,
         "revocados": revocados,
         "errores": errores,
-        "detalles": details[:50]  # corto
+        "detalles": details[:50]
     })
 
+@APP.get("/healthz")
 @APP.get("/")
 def health():
     return jsonify({"status": "ok", "service": "access-enforcer"})
