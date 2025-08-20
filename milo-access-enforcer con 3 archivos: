@@ -148,3 +148,6 @@ def apply_access():
 @APP.get("/")
 def health():
     return jsonify({"status": "ok", "service": "access-enforcer"})
+@APP.get("/__routes")
+def routes():
+    return {"routes": sorted([str(r) for r in APP.url_map.iter_rules()])}
