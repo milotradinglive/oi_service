@@ -14,7 +14,9 @@ OI_SECRET       = os.getenv("OI_SECRET", "").strip()
 ACCESS_FILE_ID  = os.getenv("ACCESS_FILE_ID", "").strip()   # Tabla Institucional (archivo en Drive)
 ACCESS_SHEET_ID = os.getenv("ACCESS_SHEET_ID", "").strip()  # Spreadsheet donde está la hoja ACCESOS
 LOG_SHEET_TAB   = os.getenv("LOG_SHEET_TAB", "APERTURAS")   # opcional
-SHEET_NAME      = os.getenv("ACCESS_SHEET_TAB", "ACCESOS")  # nombre de la pestaña ACCESOS
+ACCESS_SHEET_TAB = os.getenv("ACCESS_SHEET_TAB", os.getenv("ACCESS_SHEET", "ACCESOS")).strip()
+print(f"👉 ACCESS_SHEET_TAB = {ACCESS_SHEET_TAB}", flush=True)
+
 
 # === Google Auth (Sheets + Drive) ===
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
