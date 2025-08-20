@@ -40,8 +40,8 @@ def _get_creds():
 def _open_sheet():
     creds = _get_creds()
     client = gspread.authorize(creds)
-    # ⚠️ antes usabas ACCESS_SHEET_ID (no existe) → debe ser ACCESS_FILE_ID
-    sh = client.open_by_key(ACCESS_FILE_ID)
+    # Antes: sh = client.open_by_key(ACCESS_SHEET_ID)  # <- no existe
+    sh = client.open_by_key(ACCESS_FILE_ID)            # <- correcto
     return sh.worksheet(SHEET_NAME), client
 
 def _drive():
