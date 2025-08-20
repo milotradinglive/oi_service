@@ -9,13 +9,38 @@ from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from flask import Flask
+import os
+
 APP = Flask(__name__)
-OI_SECRET       = os.getenv("OI_SECRET", "").strip()
-ACCESS_FILE_ID  = os.getenv("ACCESS_FILE_ID", "").strip()   # Tabla Institucional (archivo en Drive)
-ACCESS_SHEET_ID = os.getenv("ACCESS_SHEET_ID", "").strip()  # Spreadsheet donde está la hoja ACCESOS
-LOG_SHEET_TAB   = os.getenv("LOG_SHEET_TAB", "APERTURAS")   # opcional
-ACCESS_SHEET_TAB = os.getenv("ACCESS_SHEET_TAB", os.getenv("ACCESS_SHEET", "ACCESOS")).strip()
-print(f"👉 ACCESS_SHEET_TAB = {ACCESS_SHEET_TAB}", flush=True)
+
+# --- Secrets / config ---
+OI_SECRET = os.getenv("OI_SECRET", "").strip()
+
+# --- Archivos ---
+# Archivo principal al que darás acceso (p. ej. "INDICADORES MULTITEMPORALES" en Drive)
+MAIN_FILE_ID   = os.getenv("MAIN_FILE_ID", "").strip()
+
+# Spreadsheet donde está la pestaña con la lista de accesos (ACCESOS)
+ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "").strip()
+
+# Nombre de la pestaña dentro del spreadsheet de accesos
+ACCESS_SHEET_TAB = (os.getenv("ACCESS_SHEET_TAB") or
+                    os.getenv("ACCESS_SHEET") or
+                    "ACCESOS").strip()
+
+# Alias por compatibilidad (si tu código usa SHEET_NAME en otras partes)
+SHEET_NAME = ACCESS_SHEET_TAB
+
+# Hoja opcional de logs
+LOG_SHEET_TAB = os.getenv("LOG_SHEET_TAB", "APERTURAS").strip()
+
+print(
+    f"👉 ACCESS_SHEET_TAB='{ACCESS_SHEET_TAB}' | "
+    f"ACCESS_FILE_ID={ACCESS_FILE_ID} | MAIN_FILE_ID={MAIN_FILE_ID}",
+    flush=True
+)
+
 
 
 # === Google Auth (Sheets + Drive) ===
