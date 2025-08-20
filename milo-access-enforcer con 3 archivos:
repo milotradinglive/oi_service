@@ -125,3 +125,19 @@ def health():
 @APP.get("/__routes")
 def routes():
     return {"routes": sorted(str(r) for r in APP.url_map.iter_rules())}
+
+# --- Endpoints de diagnóstico
+from flask import jsonify
+
+@APP.get("/")
+def root():
+    return jsonify({"status": "ok", "service": "access-enforcer"})
+
+@APP.get("/health")
+def health():
+    return jsonify({"status": "ok", "service": "access-enforcer"})
+
+@APP.get("/__routes")
+def _routes():
+    # nos lista TODAS las rutas que realmente corren
+    return {"routes": sorted(str(r) for r in APP.url_map.iter_rules())}
