@@ -332,7 +332,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "Fecha", "Hora", "Ticker",
                 "RELATIVE VERDE", "RELATIVE ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
-                "%SUBIDA", "%BAJADA",
+                "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
                 "INTENCION", "VOLUMEN", "Fuerza", "Relación",
             ]],
             range_name="A2:M2",
@@ -364,7 +364,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         time.sleep(0.15)
 
     # === A1: fecha visible en la hoja ===
-    # Tomamos el ÚLTIMO día de OI visto en los datos de ESTA hoja
     exp_dates = []
     for _, _, _, _, exp_vto, _ in datos:
         if exp_vto:
@@ -426,7 +425,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_m = (m_call - m_put) / max(m_call, m_put) * 100
             except ZeroDivisionError:
                 diff_m = 0.0
-            fuerza = diff_m
+            fuerza = diff_m  # usamos fuerza = diff_m para el sort (como antes)
 
         # --- Diferencia porcentual normalizada (volumen CALL vs PUT) ---
         if v_call <= 0 and v_put <= 0:
@@ -438,23 +437,26 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_v = 0.0
             fuerza_vol = diff_v
 
-        # Solo color verde si valor positivo, rojo si negativo
-        color_oi = "🟢" if fuerza > 0 else "🔴"
-        color_vol = "🟢" if fuerza_vol > 0 else "🔴"
+        # Bolitas por signo de H e I
+        color_oi  = "🟢" if fuerza   > 0 else "🔴" if fuerza   < 0 else "⚪"
+        color_vol = "🟢" if fuerza_vol > 0 else "🔴" if fuerza_vol < 0 else "⚪"
+        color_final = color_oi + color_vol  # ← K = bolita(H) + bolita(I)
 
-        # >>> NUEVO: detectar cambios vs. corrida anterior <<<
+        # Detectar cambios vs. corrida anterior (para resaltar)
         prev_oi, prev_vol = estado_prev.get(tk, ("", ""))
         cambio_oi = (prev_oi != "") and (prev_oi != color_oi)
         cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
         cambios_por_ticker[tk] = (cambio_oi, cambio_vol)
         estado_nuevo[tk] = (color_oi, color_vol)
-        
-        # Relación (M) = “suma” de las dos bolitas (J + K)
-        color_final = color_oi + color_vol
 
-        # Fecha por fila = expiración usada para ese ticker (fallback a A1 y luego a la fecha de hoy)
+        # Fecha por fila (exp usada)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
+        # NUEVO:
+        # - H (col 8)  = %Δ DINERO NORM. (diff_m)
+        # - I (col 9)  = %Δ VOLUMEN NORM. (diff_v)
+        # - J (col 10) = copia EXACTA de H
+        # - K (col 11) = bolita(H) + bolita(I)
         resumen.append([
             exp_fila,
             hora_txt,
@@ -463,12 +465,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             fmt_millones(m_put),
             fmt_entero_miles(v_call),
             fmt_entero_miles(v_put),
-            pct_str(diff_m),
-            pct_str(diff_v),
-            color_oi,
-            color_vol,
+            pct_str(diff_m),          # H
+            pct_str(diff_v),          # I
+            pct_str(diff_m),          # J = copia de H
+            color_final,              # K = bolita(H)+bolita(I)
             pct_str(fuerza),
-            color_final,
+            color_final,              # M se mantiene (Relación) como estaba
         ])
 
     # Encabezado + cuerpo
@@ -491,60 +493,132 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
     if resumen:
         ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
-        # --- Formateo: limpiar J/K y resaltar SOLO donde hubo cambio en esta corrida
+
+        # === Formateo visual según lo acordado ===
         sheet_id = ws.id
-        start_row = 2  # 0-based → corresponde a fila 3
+        start_row = 2   # 0-based (fila 3)
         total_rows = len(resumen)
         requests = []
 
-        # 1) Limpia fondos previos de J y K
-        requests.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row,
-                    "endRowIndex": start_row + total_rows,
-                    "startColumnIndex": 9,   # J
-                    "endColumnIndex": 11     # K (exclusivo)
-                },
-                "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
-                "fields": "userEnteredFormat.backgroundColor"
-            }
-        })
+        # 1) Limpiar fondos previos en H:I (col 8-9) y asegurar formato %
+        #    (dejamos J/K sin colores; J también en % para "copia de H")
+        requests += [
+            {  # limpiar H:I
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 7,   # H
+                        "endColumnIndex": 9      # I (exclusivo)
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            },
+            {  # formato % en H
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 7,
+                        "endColumnIndex": 8
+                    },
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            },
+            {  # formato % en I
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 8,
+                        "endColumnIndex": 9
+                    },
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            },
+            {  # formato % en J (copia de H)
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 9,
+                        "endColumnIndex": 10
+                    },
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            },
+            {  # limpiar fondos J:K (sin colores)
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 9,
+                        "endColumnIndex": 11
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            },
+        ]
 
-        # 2) Pintar celdas de cambio (amarillo suave)
-        highlight = {"red": 1, "green": 0.98, "blue": 0.75}
+        # paleta
+        verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
+        rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
+        amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
+        blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
+
+        # 2) Pintar H/I según signo; amarillo si hubo cambio vs corrida anterior
         for idx, row in enumerate(resumen):
             tk = str(row[2]).strip().upper()
             ch_oi, ch_vol = cambios_por_ticker.get(tk, (False, False))
+
+            val_h = fuerza_to_float(row[7])   # H
+            val_i = fuerza_to_float(row[8])   # I
+
+            bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
+            bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
             if ch_oi:
-                requests.append({
-                    "repeatCell": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": start_row + idx,
-                            "endRowIndex": start_row + idx + 1,
-                            "startColumnIndex": 9,
-                            "endColumnIndex": 10
-                        },
-                        "cell": {"userEnteredFormat": {"backgroundColor": highlight}},
-                        "fields": "userEnteredFormat.backgroundColor"
-                    }
-                })
+                bg_h = amarillo
             if ch_vol:
-                requests.append({
-                    "repeatCell": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": start_row + idx,
-                            "endRowIndex": start_row + idx + 1,
-                            "startColumnIndex": 10,
-                            "endColumnIndex": 11
-                        },
-                        "cell": {"userEnteredFormat": {"backgroundColor": highlight}},
-                        "fields": "userEnteredFormat.backgroundColor"
-                    }
-                })
+                bg_i = amarillo
+
+            # H
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row + idx,
+                        "endRowIndex": start_row + idx + 1,
+                        "startColumnIndex": 7,
+                        "endColumnIndex": 8
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            })
+            # I
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row + idx,
+                        "endRowIndex": start_row + idx + 1,
+                        "startColumnIndex": 8,
+                        "endColumnIndex": 9
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            })
 
         if requests:
             ws.spreadsheet.batch_update({"requests": requests})
@@ -552,11 +626,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         # 3) Guardar estado actual (para comparar en la próxima corrida)
         _escribir_estado(ws_estado, estado_nuevo)
 
-
     try:
         ws.batch_clear(["N:O"])
     except Exception as e:
         print(f"⚠️ No se pudo limpiar N:O en {ws.title}: {e}")
+
 
 
 # ========= ACCESOS — utilidades comunes =========
