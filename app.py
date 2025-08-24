@@ -626,10 +626,10 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         # 3) Guardar estado actual (para comparar en la próxima corrida)
         _escribir_estado(ws_estado, estado_nuevo)
 
-try:
-    ws.batch_clear(["L:M"])
-except Exception as e:
-    print(f"⚠️ No se pudo limpiar L:M en {ws.title}: {e}")
+    try:
+        ws.batch_clear(["L:M"])
+    except Exception as e:
+        print(f"⚠️ No se pudo limpiar L:M en {ws.title}: {e}")
 
 
 
