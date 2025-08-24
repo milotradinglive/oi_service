@@ -333,7 +333,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "RELATIVE VERDE", "RELATIVE ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
                 "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
-                "INTENCION", "VOLUMEN", "Fuerza", "Relación",
+                "Fuerza", "Relación",
             ]],
             range_name="A2:M2",
         )
