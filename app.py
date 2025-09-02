@@ -145,6 +145,27 @@ def fmt_entero_miles(x):
 def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
+# === Clasificador que emula EXACTO la Columna L (usando H/I en decimales) ===
+def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
+    """
+    Emula la lógica de la Columna L:
+      - CALLS     si H >  0.6  e I >  0.4
+      - PUTS      si H < -0.5  e I < -0.3
+      - RIESGO    si H >  0.7  y ABS(I) <= 0.2
+      - LIQUIDEZ  si H < -0.4  e I >  0.3
+      - Neutro    en cualquier otro caso
+    Nota: val_h y val_i son DECIMALES (no en %). Ej: 0.62 == 62%.
+    """
+    if (val_h > 0.6) and (val_i > 0.4):
+        return "CALLS"
+    if (val_h < -0.5) and (val_i < -0.3):
+        return "PUTS"
+    if (val_h > 0.7) and (abs(val_i) <= 0.2):
+        return "RIESGO"
+    if (val_h < -0.4) and (val_i > 0.3):
+        return "LIQUIDEZ"
+    return "Neutro"
+
 # === Persistencia del último color (por hoja objetivo) ===
 def _ensure_estado_sheet(doc, nombre_estado: str):
     """Crea/abre una hoja de estado con columnas: Ticker, ColorOI, ColorVol."""
@@ -322,6 +343,7 @@ from datetime import datetime as _dt, timedelta as _td  # alias repetidos por co
 
 
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
+    l_por_ticker = {}  # <<--- NUEVO: aquí guardaremos la "Columna L" emulada
     # Abre o crea la hoja si no existe
     try:
         ws = doc.worksheet(sheet_title)
@@ -441,7 +463,14 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         color_oi  = "🟢" if fuerza   > 0 else "🔴" if fuerza   < 0 else "⚪"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴" if fuerza_vol < 0 else "⚪"
         color_final = color_oi + color_vol  # ← K = bolita(H) + bolita(I)
+        # --- Emular Columna L con H/I en DECIMAL (no en %)
+        # diff_m y diff_v están en PORCENTAJE (ej: 62.0) → pasar a decimal:
+        val_h = (diff_m or 0.0) / 100.0
+        val_i = (diff_v or 0.0) / 100.0
+        clasif_L = _clasificar_filtro_institucional(val_h, val_i)
+        l_por_ticker[tk] = clasif_L  # guardar para servicio_IO
 
+        
         # Detectar cambios vs. corrida anterior (para resaltar)
         prev_oi, prev_vol = estado_prev.get(tk, ("", ""))
         cambio_oi = (prev_oi != "") and (prev_oi != color_oi)
@@ -623,7 +652,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         if requests:
             ws.spreadsheet.batch_update({"requests": requests})
 
-        # 3) Guardar estado actual (para comparar en la próxima corrida)
+           # 3) Guardar estado actual (para comparar en la próxima corrida)
         _escribir_estado(ws_estado, estado_nuevo)
 
     try:
@@ -631,6 +660,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     except Exception as e:
         print(f"⚠️ No se pudo limpiar L:M en {ws.title}: {e}")
 
+    # === NUEVO: devolver solo el mapa {ticker: L} para integrarlo con servicio_IO
+    return l_por_ticker
 
 
 # ========= ACCESOS — utilidades comunes =========
@@ -1103,8 +1134,17 @@ def run_once(skip_oi: bool = False):
     main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
 
     if not skip_oi:
-        actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
-        actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
+        l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
+        l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
+
+        # (Opcional) Log de handoff para servicio_IO
+        try:
+            print("SERVICIO_IO::L_SEMANA_ACTUAL=", json.dumps(l_vto1, ensure_ascii=False), flush=True)
+            print("SERVICIO_IO::L_SEMANA_SIGUIENTE=", json.dumps(l_vto2, ensure_ascii=False), flush=True)
+        except Exception:
+            pass
+    else:
+        l_vto1, l_vto2 = {}, {}
 
     acc = procesar_autorizados(accesos, main_url)
     return {
@@ -1116,8 +1156,10 @@ def run_once(skip_oi: bool = False):
         "when": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "mode": os.getenv("ACCESS_MODE", "drive"),
         "skipped_oi": skip_oi,
+        # NUEVO: mapeo Columna L por ticker (para servicio_IO)
+        "L_semana_actual": l_vto1,
+        "L_semana_siguiente": l_vto2,
     }
-
 
 # ========= Flask async guards =========
 
