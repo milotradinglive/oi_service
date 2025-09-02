@@ -339,11 +339,9 @@ def obtener_dinero(ticker, posicion_fecha=0):
 
 # ========= Escritura en Google Sheets (OI) =========
 from gspread.exceptions import WorksheetNotFound
-from datetime import datetime as _dt, timedelta as _td  # alias repetidos por compatibilidad
-
 
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
-    l_por_ticker = {}  # <<--- NUEVO: aquí guardaremos la "Columna L" emulada
+    l_por_ticker = {}  # mapa {ticker: clasif_L}
     # Abre o crea la hoja si no existe
     try:
         ws = doc.worksheet(sheet_title)
@@ -355,9 +353,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "RELATIVE VERDE", "RELATIVE ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
                 "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
-                "Fuerza", "Relación",
+                "Fuerza", "Relación", "Filtro institucional"
             ]],
-            range_name="A2:M2",
+            range_name="A2:L2",
         )
 
     # Hora NY
@@ -370,22 +368,22 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
-    # --- Estado previo por hoja (persiste entre corridas y reinicios)
+    # Estado previo / persistencia
     nombre_estado = f"ESTADO__{sheet_title}"
     ws_estado = _ensure_estado_sheet(doc, nombre_estado)
-    estado_prev = _leer_estado(ws_estado)     # {ticker: (colorOI, colorVol)}
-    estado_nuevo = {}                         # lo llenamos más abajo
-    cambios_por_ticker = {}                   # {tk: (cambio_oi, cambio_vol)}
+    estado_prev = _leer_estado(ws_estado)
+    estado_nuevo = {}
+    cambios_por_ticker = {}
 
-    # --- recolecta datos de OI ---
+    # Recolecta datos OI
     datos = []
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
         datos.append([tk, "CALL", m_c, v_c, exp, oi_c])
-        datos.append([tk, "PUT", m_p, v_p, exp, oi_p])
+        datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # === A1: fecha visible en la hoja ===
+    # A1: fecha visible (última expiración o viernes calculado)
     exp_dates = []
     for _, _, _, _, exp_vto, _ in datos:
         if exp_vto:
@@ -397,9 +395,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     def _calc_friday_from_today(pos_index: int) -> str:
         base = now_ny.date()
-        days_to_fri = (4 - base.weekday()) % 7  # 0=lun ... 4=vie
+        days_to_fri = (4 - base.weekday()) % 7
         if days_to_fri == 0:
-            days_to_fri = 7  # si hoy es viernes, tomar el próximo
+            days_to_fri = 7
         first_friday = base + _td(days=days_to_fri)
         target = first_friday + _td(days=7 * pos_index)
         return target.strftime("%Y-%m-%d")
@@ -410,23 +408,19 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     else:
         a1_value = fecha_txt
 
-    # A1: escribir la fecha (última expiración o viernes calculado)
     try:
-        print(
-            f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})",
-            flush=True,
-        )
+        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
-    # Limpiar cualquier encabezado viejo en la fila 1 (B1:M1)
+    # Limpiar encabezado viejo fila 1 (B1:M1) — seguro aunque ahora usemos L
     try:
         ws.batch_clear(["B1:M1"])
     except Exception as e:
         print(f"⚠️ No se pudo limpiar B1:M1 en {ws.title}: {e}")
 
-    # --- agrega por ticker ---
+    # Agregado por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
         if not agg[tk]["EXP"] and exp:
@@ -435,11 +429,17 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         agg[tk][side][1] += vol
 
     resumen = []
+    def fuerza_to_float(s):
+        try:
+            return float(s.replace("%", "").replace(",", "."))
+        except Exception:
+            return -9999.0
+
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
-        m_put, v_put = agg[tk]["PUT"]
+        m_put,  v_put  = agg[tk]["PUT"]
 
-        # --- Diferencia porcentual normalizada (dinero CALL vs PUT) ---
+        # % dif normalizada dinero
         if m_call <= 0 and m_put <= 0:
             diff_m = fuerza = 0.0
         else:
@@ -447,9 +447,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_m = (m_call - m_put) / max(m_call, m_put) * 100
             except ZeroDivisionError:
                 diff_m = 0.0
-            fuerza = diff_m  # usamos fuerza = diff_m para el sort (como antes)
+            fuerza = diff_m
 
-        # --- Diferencia porcentual normalizada (volumen CALL vs PUT) ---
+        # % dif normalizada volumen
         if v_call <= 0 and v_put <= 0:
             diff_v = fuerza_vol = 0.0
         else:
@@ -459,79 +459,63 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_v = 0.0
             fuerza_vol = diff_v
 
-        # Bolitas por signo de H e I
-        color_oi  = "🟢" if fuerza   > 0 else "🔴" if fuerza   < 0 else "⚪"
+        color_oi  = "🟢" if fuerza     > 0 else "🔴" if fuerza     < 0 else "⚪"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴" if fuerza_vol < 0 else "⚪"
-        color_final = color_oi + color_vol  # ← K = bolita(H) + bolita(I)
-        # --- Emular Columna L con H/I en DECIMAL (no en %)
-        # diff_m y diff_v están en PORCENTAJE (ej: 62.0) → pasar a decimal:
+        color_final = color_oi + color_vol
+
+        # L (clasificación) usando H/I en decimales
         val_h = (diff_m or 0.0) / 100.0
         val_i = (diff_v or 0.0) / 100.0
         clasif_L = _clasificar_filtro_institucional(val_h, val_i)
-        l_por_ticker[tk] = clasif_L  # guardar para servicio_IO
+        l_por_ticker[tk] = clasif_L
 
-        
-        # Detectar cambios vs. corrida anterior (para resaltar)
         prev_oi, prev_vol = estado_prev.get(tk, ("", ""))
         cambio_oi = (prev_oi != "") and (prev_oi != color_oi)
         cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
         cambios_por_ticker[tk] = (cambio_oi, cambio_vol)
         estado_nuevo[tk] = (color_oi, color_vol)
 
-        # Fecha por fila (exp usada)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-        # NUEVO:
-        # - H (col 8)  = %Δ DINERO NORM. (diff_m)
-        # - I (col 9)  = %Δ VOLUMEN NORM. (diff_v)
-        # - J (col 10) = copia EXACTA de H
-        # - K (col 11) = bolita(H) + bolita(I)
- resumen.append([
-        exp_fila,                 # A
-        hora_txt,                 # B
-        tk,                       # C
-        fmt_millones(m_call),     # D
-        fmt_millones(m_put),      # E
-        fmt_entero_miles(v_call), # F
-        fmt_entero_miles(v_put),  # G
-        pct_str(diff_m),          # H  %Δ DINERO NORM.
-        pct_str(diff_v),          # I  %Δ VOLUMEN NORM.
-        pct_str(diff_m),          # J  Fuerza (copia de H)
-        color_final,              # K  Relación (bolitas)
-        clasif_L,                 # L  Filtro institucional  ← ← ←
-      ])
+        # Fila A..L (12 columnas)
+        resumen.append([
+            exp_fila,                 # A
+            hora_txt,                 # B
+            tk,                       # C
+            fmt_millones(m_call),     # D
+            fmt_millones(m_put),      # E
+            fmt_entero_miles(v_call), # F
+            fmt_entero_miles(v_put),  # G
+            pct_str(diff_m),          # H
+            pct_str(diff_v),          # I
+            pct_str(diff_m),          # J (Fuerza = copia de H)
+            color_final,              # K (Relación)
+            clasif_L,                 # L (Filtro institucional)
+        ])
 
-    # Encabezado + cuerpo
+    # Encabezado + cuerpo (A..L)
     encabezado = [[
-    "Fecha", "Hora", "Ticker",
-    "RELATIVE VERDE", "RELATIVE ROJO",
-    "VOLUMEN ENTRA", "VOLUMEN SALE",
-    "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
-    "Fuerza", "Relación", "Filtro institucional"  # ← agrega L
-]]
-ws.update(values=encabezado, range_name="A2:L2")
-ws.batch_clear(["A3:L1000"])
+        "Fecha", "Hora", "Ticker",
+        "RELATIVE VERDE", "RELATIVE ROJO",
+        "VOLUMEN ENTRA", "VOLUMEN SALE",
+        "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
+        "Fuerza", "Relación", "Filtro institucional"
+    ]]
+    ws.update(values=encabezado, range_name="A2:L2")
+    ws.batch_clear(["A3:L1000"])
 
-    def fuerza_to_float(s):
-        try:
-            return float(s.replace("%", "").replace(",", "."))
-        except Exception:
-            return -9999.0
-
-    # J es índice 9 (A0..L11)
+    # Ordenar por Fuerza (J = índice 9)
     resumen.sort(key=lambda row: -fuerza_to_float(row[9]))
     if resumen:
-    ws.update(values=resumen, range_name=f"A3:L{len(resumen)+2}")
+        ws.update(values=resumen, range_name=f"A3:L{len(resumen)+2}")
 
-
-        # === Formateo visual según lo acordado ===
+        # === Formateo visual H/I ===
         sheet_id = ws.id
         start_row = 2   # 0-based (fila 3)
         total_rows = len(resumen)
         requests = []
 
-        # 1) Limpiar fondos previos en H:I (col 8-9) y asegurar formato %
-        #    (dejamos J/K sin colores; J también en % para "copia de H")
+        # limpiar H:I + formato %
         requests += [
             {  # limpiar H:I
                 "repeatCell": {
@@ -540,13 +524,13 @@ ws.batch_clear(["A3:L1000"])
                         "startRowIndex": start_row,
                         "endRowIndex": start_row + total_rows,
                         "startColumnIndex": 7,   # H
-                        "endColumnIndex": 9      # I (exclusivo)
+                        "endColumnIndex": 9      # I (excl.)
                     },
                     "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
             },
-            {  # formato % en H
+            {  # H en %
                 "repeatCell": {
                     "range": {
                         "sheetId": sheet_id,
@@ -559,7 +543,7 @@ ws.batch_clear(["A3:L1000"])
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
-            {  # formato % en I
+            {  # I en %
                 "repeatCell": {
                     "range": {
                         "sheetId": sheet_id,
@@ -572,7 +556,7 @@ ws.batch_clear(["A3:L1000"])
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
-            {  # formato % en J (copia de H)
+            {  # J en % (copia H)
                 "repeatCell": {
                     "range": {
                         "sheetId": sheet_id,
@@ -585,7 +569,7 @@ ws.batch_clear(["A3:L1000"])
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
-            {  # limpiar fondos J:K (sin colores)
+            {  # limpiar fondos J:K
                 "repeatCell": {
                     "range": {
                         "sheetId": sheet_id,
@@ -606,11 +590,10 @@ ws.batch_clear(["A3:L1000"])
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
         blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
 
-        # 2) Pintar H/I según signo; amarillo si hubo cambio vs corrida anterior
+        # Pintar H/I por signo y cambios
         for idx, row in enumerate(resumen):
             tk = str(row[2]).strip().upper()
             ch_oi, ch_vol = cambios_por_ticker.get(tk, (False, False))
-
             val_h = fuerza_to_float(row[7])   # H
             val_i = fuerza_to_float(row[8])   # I
 
@@ -653,13 +636,11 @@ ws.batch_clear(["A3:L1000"])
         if requests:
             ws.spreadsheet.batch_update({"requests": requests})
 
-           # 3) Guardar estado actual (para comparar en la próxima corrida)
-        _escribir_estado(ws_estado, estado_nuevo)
+    # Persistir estado para próxima corrida
+    _escribir_estado(ws_estado, estado_nuevo)
 
-    
-    # === NUEVO: devolver solo el mapa {ticker: L} para integrarlo con servicio_IO
+    # Devolver mapeo {ticker: L}
     return l_por_ticker
-
 
 # ========= ACCESOS — utilidades comunes =========
 
