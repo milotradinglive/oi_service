@@ -486,32 +486,31 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         # - I (col 9)  = %Δ VOLUMEN NORM. (diff_v)
         # - J (col 10) = copia EXACTA de H
         # - K (col 11) = bolita(H) + bolita(I)
-        resumen.append([
-            exp_fila,
-            hora_txt,
-            tk,
-            fmt_millones(m_call),
-            fmt_millones(m_put),
-            fmt_entero_miles(v_call),
-            fmt_entero_miles(v_put),
-            pct_str(diff_m),          # H
-            pct_str(diff_v),          # I
-            pct_str(diff_m),          # J = copia de H
-            color_final,              # K = bolita(H)+bolita(I)
-            pct_str(fuerza),
-            color_final,              # M se mantiene (Relación) como estaba
-        ])
+ resumen.append([
+        exp_fila,                 # A
+        hora_txt,                 # B
+        tk,                       # C
+        fmt_millones(m_call),     # D
+        fmt_millones(m_put),      # E
+        fmt_entero_miles(v_call), # F
+        fmt_entero_miles(v_put),  # G
+        pct_str(diff_m),          # H  %Δ DINERO NORM.
+        pct_str(diff_v),          # I  %Δ VOLUMEN NORM.
+        pct_str(diff_m),          # J  Fuerza (copia de H)
+        color_final,              # K  Relación (bolitas)
+        clasif_L,                 # L  Filtro institucional  ← ← ←
+      ])
 
     # Encabezado + cuerpo
     encabezado = [[
-        "Fecha", "Hora", "Ticker",
-        "RELATIVE VERDE", "RELATIVE ROJO",
-        "VOLUMEN ENTRA", "VOLUMEN SALE",
-        "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
-        "Fuerza", "Relación",
-    ]]
-    ws.update(values=encabezado, range_name="A2:M2")
-    ws.batch_clear(["A3:M1000"])
+    "Fecha", "Hora", "Ticker",
+    "RELATIVE VERDE", "RELATIVE ROJO",
+    "VOLUMEN ENTRA", "VOLUMEN SALE",
+    "%Δ DINERO NORM.", "%Δ VOLUMEN NORM.",
+    "Fuerza", "Relación", "Filtro institucional"  # ← agrega L
+]]
+ws.update(values=encabezado, range_name="A2:L2")
+ws.batch_clear(["A3:L1000"])
 
     def fuerza_to_float(s):
         try:
@@ -519,9 +518,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         except Exception:
             return -9999.0
 
-    resumen.sort(key=lambda row: -fuerza_to_float(row[11]))
+    # J es índice 9 (A0..L11)
+    resumen.sort(key=lambda row: -fuerza_to_float(row[9]))
     if resumen:
-        ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
+    ws.update(values=resumen, range_name=f"A3:L{len(resumen)+2}")
+
 
         # === Formateo visual según lo acordado ===
         sheet_id = ws.id
@@ -655,11 +656,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
            # 3) Guardar estado actual (para comparar en la próxima corrida)
         _escribir_estado(ws_estado, estado_nuevo)
 
-    try:
-        ws.batch_clear(["L:M"])
-    except Exception as e:
-        print(f"⚠️ No se pudo limpiar L:M en {ws.title}: {e}")
-
+    
     # === NUEVO: devolver solo el mapa {ticker: L} para integrarlo con servicio_IO
     return l_por_ticker
 
