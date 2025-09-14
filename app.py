@@ -168,16 +168,23 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
 
 # === Persistencia del último color (por hoja objetivo) ===
 def _ensure_estado_sheet(doc, nombre_estado: str):
-    """Crea/abre una hoja de estado con columnas: Ticker, ColorOI, ColorVol."""
+    """Crea/abre una hoja de estado con columnas: Ticker, ColorOI, ColorVol, EstadoL."""
     try:
         ws = doc.worksheet(nombre_estado)
     except gspread.exceptions.WorksheetNotFound:
-        ws = doc.add_worksheet(title=nombre_estado, rows=400, cols=3)
-        ws.update(values=[["Ticker", "ColorOI", "ColorVol"]], range_name="A1")
+        ws = doc.add_worksheet(title=nombre_estado, rows=600, cols=4)
+        ws.update(values=[["Ticker", "ColorOI", "ColorVol", "EstadoL"]], range_name="A1")
+        return ws
+
+    # Asegura encabezado con 4 columnas (compat con hojas viejas)
+    headers = ws.get_values("A1:D1")
+    if not headers or len(headers[0]) < 4:
+        ws.update(values=[["Ticker", "ColorOI", "ColorVol", "EstadoL"]], range_name="A1")
     return ws
 
+
 def _leer_estado(ws_estado):
-    """Devuelve dict {ticker: (color_oi, color_vol)}"""
+    """Devuelve dict {ticker: (color_oi, color_vol, estado_l)} (compat con hojas viejas)."""
     rows = ws_estado.get_all_values()
     d = {}
     for r in rows[1:]:
@@ -186,20 +193,21 @@ def _leer_estado(ws_estado):
         t = (r[0] or "").strip().upper()
         if not t:
             continue
-        c_oi = (r[1] or "").strip()
-        c_v  = (r[2] or "").strip()
-        d[t] = (c_oi, c_v)
+        c_oi = (r[1] if len(r) > 1 else "").strip()
+        c_v  = (r[2] if len(r) > 2 else "").strip()
+        e_l  = (r[3] if len(r) > 3 else "").strip()
+        d[t] = (c_oi, c_v, e_l)
     return d
 
 def _escribir_estado(ws_estado, mapa):
-    """Sobrescribe toda la tabla con el último color por ticker."""
-    data = [["Ticker", "ColorOI", "ColorVol"]]
+    """Sobrescribe toda la tabla con el último estado por ticker (incluye EstadoL)."""
+    data = [["Ticker", "ColorOI", "ColorVol", "EstadoL"]]
     for tk in sorted(mapa.keys()):
-        c_oi, c_v = mapa[tk]
-        data.append([tk, c_oi, c_v])
-    ws_estado.batch_clear(["A2:C1000"])
+        c_oi, c_v, e_l = mapa[tk]
+        data.append([tk, c_oi, c_v, e_l])
+    ws_estado.batch_clear(["A2:D10000"])
     if len(data) > 1:
-        ws_estado.update(values=data, range_name=f"A1:C{len(data)}")
+        ws_estado.update(values=data, range_name=f"A1:D{len(data)}")
 
 
 # ========= Lógica de expiraciones / datos (OI) =========
@@ -342,6 +350,7 @@ from gspread.exceptions import WorksheetNotFound
 
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     l_por_ticker = {}  # mapa {ticker: clasif_L}
+
     # Abre o crea la hoja si no existe
     try:
         ws = doc.worksheet(sheet_title)
@@ -371,7 +380,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # Estado previo / persistencia
     nombre_estado = f"ESTADO__{sheet_title}"
     ws_estado = _ensure_estado_sheet(doc, nombre_estado)
-    estado_prev = _leer_estado(ws_estado)
+    estado_prev = _leer_estado(ws_estado)              # {tk: (colorOI, colorVol, estadoL)}
     estado_nuevo = {}
     cambios_por_ticker = {}
 
@@ -429,6 +438,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         agg[tk][side][1] += vol
 
     resumen = []
+
     def fuerza_to_float(s):
         try:
             return float(s.replace("%", "").replace(",", "."))
@@ -439,7 +449,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
 
-        # % dif normalizada dinero
+        # % dif normalizada dinero (H/J)
         if m_call <= 0 and m_put <= 0:
             diff_m = fuerza = 0.0
         else:
@@ -449,7 +459,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 diff_m = 0.0
             fuerza = diff_m
 
-        # % dif normalizada volumen
+        # % dif normalizada volumen (I)
         if v_call <= 0 and v_put <= 0:
             diff_v = fuerza_vol = 0.0
         else:
@@ -469,11 +479,15 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         clasif_L = _clasificar_filtro_institucional(val_h, val_i)
         l_por_ticker[tk] = clasif_L
 
-        prev_oi, prev_vol = estado_prev.get(tk, ("", ""))
-        cambio_oi = (prev_oi != "") and (prev_oi != color_oi)
+        # Cambios vs estado previo (3 campos)
+        prev_oi, prev_vol, prev_l = estado_prev.get(tk, ("", "", ""))
+        cambio_oi  = (prev_oi  != "") and (prev_oi  != color_oi)
         cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
-        cambios_por_ticker[tk] = (cambio_oi, cambio_vol)
-        estado_nuevo[tk] = (color_oi, color_vol)
+        es_alineado = clasif_L in ("CALLS", "PUTS")
+        cambio_L = es_alineado and (clasif_L != prev_l)
+
+        cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
+        estado_nuevo[tk] = (color_oi, color_vol, clasif_L)
 
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
@@ -509,75 +523,42 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     if resumen:
         ws.update(values=resumen, range_name=f"A3:L{len(resumen)+2}")
 
-        # === Formateo visual H/I ===
+        # === Formateo visual H/I/J y limpieza fondos J:L ===
         sheet_id = ws.id
         start_row = 2   # 0-based (fila 3)
         total_rows = len(resumen)
         requests = []
 
-        # limpiar H:I + formato %
+        # números en % para H, I, J
         requests += [
-            {  # limpiar H:I
-                "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 7,   # H
-                        "endColumnIndex": 9      # I (excl.)
-                    },
-                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
-                    "fields": "userEnteredFormat.backgroundColor"
-                }
-            },
             {  # H en %
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 7,
-                        "endColumnIndex": 8
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": 7, "endColumnIndex": 8},
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
             {  # I en %
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 8,
-                        "endColumnIndex": 9
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": 8, "endColumnIndex": 9},
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
-            {  # J en % (copia H)
+            {  # J en %
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 9,
-                        "endColumnIndex": 10
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": 9, "endColumnIndex": 10},
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
-            {  # limpiar fondos J:K
+            {  # limpiar fondos H:L
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 9,
-                        "endColumnIndex": 11
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": 7, "endColumnIndex": 12},
                     "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
@@ -590,30 +571,43 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
         blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
 
-        # Pintar H/I por signo y cambios
+        # Pintar H/I/L por signo y cambios
         for idx, row in enumerate(resumen):
             tk = str(row[2]).strip().upper()
-            ch_oi, ch_vol = cambios_por_ticker.get(tk, (False, False))
-            val_h = fuerza_to_float(row[7])   # H
-            val_i = fuerza_to_float(row[8])   # I
+            ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
+
+            # L
+            clasif_L = l_por_ticker.get(tk, "Neutro")
+            if   clasif_L == "CALLS": bg_l = verde
+            elif clasif_L == "PUTS":  bg_l = rojo
+            else:                     bg_l = blanco
+            if ch_L: bg_l = amarillo
+
+            requests.append({
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id,
+                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                              "startColumnIndex": 11, "endColumnIndex": 12},
+                    "cell": {"userEnteredFormat": {"backgroundColor": bg_l}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            })
+
+            # H/I
+            val_h = fuerza_to_float(row[7])
+            val_i = fuerza_to_float(row[8])
 
             bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
             bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
-            if ch_oi:
-                bg_h = amarillo
-            if ch_vol:
-                bg_i = amarillo
+            if ch_oi:  bg_h = amarillo
+            if ch_vol: bg_i = amarillo
 
             # H
             requests.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row + idx,
-                        "endRowIndex": start_row + idx + 1,
-                        "startColumnIndex": 7,
-                        "endColumnIndex": 8
-                    },
+                    "range": {"sheetId": sheet_id,
+                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                              "startColumnIndex": 7, "endColumnIndex": 8},
                     "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
@@ -621,13 +615,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             # I
             requests.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row + idx,
-                        "endRowIndex": start_row + idx + 1,
-                        "startColumnIndex": 8,
-                        "endColumnIndex": 9
-                    },
+                    "range": {"sheetId": sheet_id,
+                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                              "startColumnIndex": 8, "endColumnIndex": 9},
                     "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
@@ -641,6 +631,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     # Devolver mapeo {ticker: L}
     return l_por_ticker
+
 
 # ========= ACCESOS — utilidades comunes =========
 
