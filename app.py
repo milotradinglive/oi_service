@@ -361,7 +361,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "Fecha", "Hora", "Ticker",
                 "RELATIVE VERDE", "RELATIVE ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
-                "% DINERO Trade Cnt.", "% VOLUMEN.",
+                "TENDENCIA Trade Cnt.", "VOLUMEN.",
                 "Fuerza", "Relación", "Filtro institucional"
             ]],
             range_name="A2:L2",
@@ -512,7 +512,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         "Fecha", "Hora", "Ticker",
         "RELATIVE VERDE", "RELATIVE ROJO",
         "VOLUMEN ENTRA", "VOLUMEN SALE",
-        "% DINERO Trade Cnt.", "% VOLUMEN.",
+        "TENDENCIA Trade Cnt.", "VOLUMEN.",
         "Fuerza", "Relación", "Filtro institucional"
     ]]
     ws.update(values=encabezado, range_name="A2:L2")
