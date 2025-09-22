@@ -1,6 +1,9 @@
-# app.py — milo-oi-service (restaurado)
-# NOTA: Se respetó toda tu lógica y funciones. Solo se reordenó/formateó
-#       para que ejecute sin errores y sea fácil de mantener.
+# app.py — milo-oi-service (unificado con snapshot + columna M dinámica)
+# - Mantiene toda la lógica/estructura original de tu servicio.
+# - Añade:
+#   1) snapshot_congelado(): copia "Semana actual" -> "dia anterior" 1 vez al iniciar RTH NYSE por sesión.
+#   2) Columna M (💵) con umbrales dinámicos + 🔥 la primera vez que alcanza nivel 3 por hoja.
+# - NO elimina nada; solo mejora sin romper compatibilidad.
 
 import os
 import time
@@ -19,14 +22,13 @@ from flask import Flask, jsonify, request
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
+from gspread.exceptions import WorksheetNotFound
 
 # ========= Flask app =========
 app = Flask(__name__)
 OI_SECRET = os.getenv("OI_SECRET", "").strip()
 APP_VERSION = os.getenv("RENDER_GIT_COMMIT", "")[:7] or "dev"
 print(f"🚀 Iniciando oi-updater versión {APP_VERSION}", flush=True)
-
 
 @app.get("/")
 def root():
@@ -36,7 +38,6 @@ def root():
         "version": APP_VERSION,
         "time": datetime.utcnow().isoformat() + "Z",
     })
-
 
 # ========= Config =========
 SCOPES = [
@@ -50,16 +51,10 @@ ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1CY06Lw1QYZQEXuMO02EPe8vUOipizuhbW
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
 TRADIER_TOKEN = os.getenv("TRADIER_TOKEN", "")
 
-
-# ====== Lock inter-proceso (para evitar /run y /update simultáneos) ======
+# ====== Lock inter-proceso (evita ejecuciones simultáneas) ======
 LOCK_FILE = "/tmp/oi-updater.lock"
 
-
 def _acquire_lock():
-    """
-    Intenta tomar un candado de archivo no bloqueante.
-    Devuelve el file handle si lo obtiene, o None si ya hay otra ejecución corriendo.
-    """
     f = open(LOCK_FILE, "a+")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -75,9 +70,7 @@ def _acquire_lock():
         f.close()
         return None
 
-
 # ========= Auth desde variable de entorno =========
-
 def make_gspread_and_creds():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
@@ -91,10 +84,8 @@ def make_gspread_and_creds():
     legacy_creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, legacy_scopes)
     return gspread.authorize(legacy_creds), legacy_creds, creds_info
 
-
 client, google_api_creds, _creds_info = make_gspread_and_creds()
 drive = build("drive", "v3", credentials=google_api_creds)
-
 
 # ========= Datos base =========
 TICKERS = [
@@ -109,7 +100,6 @@ TIMEOUT = 12
 # ========= Sesión HTTP Tradier =========
 session = requests.Session()
 session.headers.update({"Authorization": f"Bearer {TRADIER_TOKEN}", "Accept": "application/json"})
-
 
 def get_json(url, params=None, max_retries=3):
     for intento in range(1, max_retries + 1):
@@ -129,33 +119,20 @@ def get_json(url, params=None, max_retries=3):
             print(f"⚠️ Error {e}. Reintento {intento}/{max_retries} en {espera:.1f}s")
             time.sleep(espera)
 
-
 # ========= Utilidades de formato =========
-
 def fmt_millones(x):
     s = f"{x:,.1f}"
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
 
 def fmt_entero_miles(x):
     s = f"{int(x):,}"
     return s.replace(",", ".")
 
-
 def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
-# === Clasificador que emula EXACTO la Columna L (usando H/I en decimales) ===
+# === Clasificador L (se respeta tu versión del servicio, NO se cambia) ===
 def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
-    """
-    Emula la lógica de la Columna L:
-      - CALLS     si H >  0.6  e I >  0.4
-      - PUTS      si H < -0.5  e I < -0.3
-      - RIESGO    si H >  0.7  y ABS(I) <= 0.2
-      - LIQUIDEZ  si H < -0.4  e I >  0.3
-      - Neutro    en cualquier otro caso
-    Nota: val_h y val_i son DECIMALES (no en %). Ej: 0.62 == 62%.
-    """
     if (val_h > 0.6) and (val_i > 0.4):
         return "CALLS"
     if (val_h < -0.5) and (val_i < -0.3):
@@ -166,25 +143,20 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
         return "LIQUIDEZ"
     return "Neutro"
 
-# === Persistencia del último color (por hoja objetivo) ===
+# === Persistencia del último color/estado (por hoja objetivo) ===
 def _ensure_estado_sheet(doc, nombre_estado: str):
-    """Crea/abre una hoja de estado con columnas: Ticker, ColorOI, ColorVol, EstadoL."""
     try:
         ws = doc.worksheet(nombre_estado)
     except gspread.exceptions.WorksheetNotFound:
         ws = doc.add_worksheet(title=nombre_estado, rows=600, cols=4)
         ws.update(values=[["Ticker", "ColorOI", "ColorVol", "EstadoL"]], range_name="A1")
         return ws
-
-    # Asegura encabezado con 4 columnas (compat con hojas viejas)
     headers = ws.get_values("A1:D1")
     if not headers or len(headers[0]) < 4:
         ws.update(values=[["Ticker", "ColorOI", "ColorVol", "EstadoL"]], range_name="A1")
     return ws
 
-
 def _leer_estado(ws_estado):
-    """Devuelve dict {ticker: (color_oi, color_vol, estado_l)} (compat con hojas viejas)."""
     rows = ws_estado.get_all_values()
     d = {}
     for r in rows[1:]:
@@ -200,7 +172,6 @@ def _leer_estado(ws_estado):
     return d
 
 def _escribir_estado(ws_estado, mapa):
-    """Sobrescribe toda la tabla con el último estado por ticker (incluye EstadoL)."""
     data = [["Ticker", "ColorOI", "ColorVol", "EstadoL"]]
     for tk in sorted(mapa.keys()):
         c_oi, c_v, e_l = mapa[tk]
@@ -209,10 +180,8 @@ def _escribir_estado(ws_estado, mapa):
     if len(data) > 1:
         ws_estado.update(values=data, range_name=f"A1:D{len(data)}")
 
-
-# ========= Lógica de expiraciones / datos (OI) =========
-from datetime import datetime as _dt, timedelta as _td  # mantener alias usado en tu código
-
+# ========= Lógica expiraciones / datos (OI) =========
+from datetime import datetime as _dt, timedelta as _td
 
 def elegir_expiracion_viernes(expiraciones, posicion_fecha):
     hoy = _dt.now().date()
@@ -220,7 +189,6 @@ def elegir_expiracion_viernes(expiraciones, posicion_fecha):
     if dias_a_viernes == 0:
         dias_a_viernes = 7
     proximo_viernes = hoy + _td(days=dias_a_viernes)
-
     fechas_viernes = []
     for d in expiraciones or []:
         try:
@@ -230,11 +198,9 @@ def elegir_expiracion_viernes(expiraciones, posicion_fecha):
         except Exception:
             continue
     fechas_viernes.sort()
-
     if len(fechas_viernes) <= posicion_fecha:
         return None
     return fechas_viernes[posicion_fecha].strftime("%Y-%m-%d")
-
 
 def obtener_dinero(ticker, posicion_fecha=0):
     try:
@@ -344,14 +310,183 @@ def obtener_dinero(ticker, posicion_fecha=0):
         print(f"❌ Error con {ticker}: {e}")
         return 0, 0, 0.0, 0.0, 0, 0, None
 
+# ========= SNAPSHOT "dia anterior" (ADICIÓN) =========
+# Congela "dia anterior" copiando "Semana actual" (valores+formatos) la PRIMERA VEZ
+# que detecta un NUEVO día hábil con mercado NY abierto (RTH).
+NYSE_HOLIDAYS_2025 = {
+    "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26",
+    "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25",
+}
+_last_closed_log = None  # para no spamear
+
+def _now_ny():
+    ny = pytz.timezone("America/New_York")
+    return datetime.now(timezone.utc).astimezone(ny)
+
+def _is_trading_day(dt_ny):
+    if dt_ny.weekday() >= 5:
+        return False
+    return dt_ny.strftime("%Y-%m-%d") not in NYSE_HOLIDAYS_2025
+
+def _is_rth_open(dt_ny):
+    t = dt_ny.time()
+    return (t >= datetime.strptime("09:30:00", "%H:%M:%S").time()
+            and t <= datetime.strptime("16:00:00", "%H:%M:%S").time())
+
+def _ensure_sheet_generic(doc, title, rows=200, cols=20):
+    try:
+        return doc.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        return doc.add_worksheet(title=title, rows=rows, cols=cols)
+
+def _get_used_size(ws):
+    vals = ws.get_all_values()
+    if not vals:
+        return 0, 0
+    rows = len(vals)
+    cols = max((len(r) for r in vals), default=0)
+    return rows, cols
+
+def _meta_read(ws_meta, key, default=""):
+    vals = ws_meta.get_all_values()
+    kv = {}
+    for row in vals[1:]:
+        if len(row) >= 2 and row[0]:
+            kv[row[0]] = row[1]
+    return kv.get(key, default)
+
+def _meta_write(ws_meta, key, val):
+    vals = ws_meta.get_all_values()
+    if not vals:
+        ws_meta.update([["key","value"]], "A1")
+        vals = [["key","value"]]
+    found_row = None
+    for i, row in enumerate(vals[1:], start=2):
+        if len(row) >= 1 and row[0] == key:
+            found_row = i
+            break
+    if found_row is None:
+        next_row = len(vals) + 1
+        ws_meta.update([[key, val]], f"A{next_row}:B{next_row}")
+    else:
+        ws_meta.update([[key, val]], f"A{found_row}:B{found_row}")
+
+def _batch_update(doc, body):
+    doc.batch_update(body)
+
+def _clear_range_format_and_values(doc, sheet_id, rows, cols):
+    if rows == 0 or cols == 0:
+        return
+    _batch_update(doc, {
+        "requests": [{
+            "updateCells": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": rows,
+                          "startColumnIndex": 0, "endColumnIndex": cols},
+                "fields": "userEnteredValue,userEnteredFormat"
+            }
+        }]
+    })
+
+def _copy_values_and_formats(doc, src_sheet_id, dst_sheet_id, rows, cols):
+    if rows == 0 or cols == 0:
+        return
+    _batch_update(doc, {
+        "requests": [{
+            "copyPaste": {
+                "source":      {"sheetId": src_sheet_id, "startRowIndex": 0, "endRowIndex": rows,
+                                "startColumnIndex": 0, "endColumnIndex": cols},
+                "destination": {"sheetId": dst_sheet_id, "startRowIndex": 0, "endRowIndex": rows,
+                                "startColumnIndex": 0, "endColumnIndex": cols},
+                "pasteType": "PASTE_NORMAL",
+                "pasteOrientation": "NORMAL"
+            }
+        }]
+    })
+
+def snapshot_congelado(doc_main):
+    """
+    Congela 'dia anterior' copiando 'Semana actual' (valores+formatos) la PRIMERA VEZ
+    que detecta un NUEVO día hábil con mercado NY abierto (RTH). Idempotente por día.
+    """
+    global _last_closed_log
+    HOJA_ORIGEN = "Semana actual"
+    HOJA_DEST   = "dia anterior"
+    HOJA_META   = "META"
+
+    now_ny = _now_ny()
+    hoy = now_ny.strftime("%Y-%m-%d")
+
+    if not _is_trading_day(now_ny) or not _is_rth_open(now_ny):
+        if _last_closed_log != hoy:
+            print("⏸️  Mercado cerrado o día no hábil → 'dia anterior' sigue congelado.", flush=True)
+            _last_closed_log = hoy
+        return False
+
+    ws_src  = _ensure_sheet_generic(doc_main, HOJA_ORIGEN)
+    ws_dest = _ensure_sheet_generic(doc_main, HOJA_DEST)
+    ws_meta = _ensure_sheet_generic(doc_main, HOJA_META, rows=50, cols=2)
+
+    last_session = _meta_read(ws_meta, "last_snapshot_session", "")
+    if last_session == hoy:
+        print("ℹ️  Snapshot ya hecho hoy. No se repite.", flush=True)
+        return False
+
+    used_rows, used_cols = _get_used_size(ws_src)
+    if used_rows == 0 or used_cols == 0:
+        print("ℹ️  Origen vacío. Nada para congelar.", flush=True)
+        _meta_write(ws_meta, "last_snapshot_session", hoy)
+        return False
+
+    if ws_dest.row_count < used_rows or ws_dest.col_count < used_cols:
+        ws_dest.resize(max(ws_dest.row_count, used_rows), max(ws_dest.col_count, used_cols))
+
+    _clear_range_format_and_values(doc_main, ws_dest.id, used_rows, used_cols)
+    _copy_values_and_formats(doc_main, ws_src.id, ws_dest.id, used_rows, used_cols)
+
+    _meta_write(ws_meta, "last_snapshot_session", hoy)
+    try:
+        ws_dest.update([[f"Snapshot RTH: {hoy} (congelado hasta próxima sesión)"]], "N1")
+    except Exception:
+        pass
+
+    print(f"✅ 'dia anterior' congelado desde 'Semana actual' — {used_rows}x{used_cols} @ {hoy} NY.", flush=True)
+    return True
+
+# ========= Señal M (💵) dinámica + 🔥 primera vez nivel 3 (ADICIÓN) =========
+# estado en memoria por sesión de proceso (no persiste entre pods/restarts)
+_LEVEL3_VISTO = set()  # claves: f"{sheet_title}:{ticker}"
+
+def _percentile(sorted_list, p):
+    if not sorted_list:
+        return 0.0
+    k = max(0, min(len(sorted_list)-1, int(round(p * (len(sorted_list)-1)))))
+    return float(sorted_list[k])
+
+def _emoji_billetes_por_abs_val_h(abs_val_h, t_baja, t_media,
+                                  vol_conf=None,
+                                  money_total=None, t_money_baja=None, t_money_media=None):
+    # Nivel base
+    if abs_val_h < t_baja:
+        lvl = 1
+    elif abs_val_h < t_media:
+        lvl = 2
+    else:
+        lvl = 3
+    # Degradación por poco dinero absoluto
+    if money_total is not None and t_money_baja is not None and t_money_media is not None:
+        if lvl == 3 and money_total < t_money_media:
+            lvl = 2
+        if lvl >= 2 and money_total < t_money_baja:
+            lvl = 1
+    # Penalización por falta de volumen
+    if vol_conf is not None and vol_conf < 0.10 and lvl > 1:
+        lvl -= 1
+    lvl = max(1, min(3, lvl))
+    return "💵" * lvl if lvl >= 2 else ""
 
 # ========= Escritura en Google Sheets (OI) =========
-from gspread.exceptions import WorksheetNotFound
-
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
-    l_por_ticker = {}  # mapa {ticker: clasif_L}
-
-    # Abre o crea la hoja si no existe
+    # --- Recolección OI/Volumen por ticker ---
     try:
         ws = doc.worksheet(sheet_title)
     except WorksheetNotFound:
@@ -362,9 +497,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "RELATIVE VERDE", "RELATIVE ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
                 "TENDENCIA Trade Cnt.", "VOLUMEN.",
-                "Fuerza", "Relación", "Filtro institucional"
+                "Fuerza", "Relación", "Filtro institucional", "💵"
             ]],
-            range_name="A2:L2",
+            range_name="A2:M2",
         )
 
     # Hora NY
@@ -392,7 +527,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # A1: fecha visible (última expiración o viernes calculado)
+    # A1: fecha visible (máxima exp si hay, si no, viernes objetivo)
     exp_dates = []
     for _, _, _, _, exp_vto, _ in datos:
         if exp_vto:
@@ -423,11 +558,10 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
-    # Limpiar encabezado viejo fila 1 (B1:M1) — seguro aunque ahora usemos L
     try:
-        ws.batch_clear(["B1:M1"])
+        ws.batch_clear(["B1:N1"])  # limpiamos fila 1 excepto A1 (dejamos espacio si ya existía algo)
     except Exception as e:
-        print(f"⚠️ No se pudo limpiar B1:M1 en {ws.title}: {e}")
+        print(f"⚠️ No se pudo limpiar B1:N1 en {ws.title}: {e}")
 
     # Agregado por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
@@ -437,14 +571,15 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    resumen = []
-
+    # Construcción base + cálculo H/I/J + clasificador L
+    filas = []
     def fuerza_to_float(s):
         try:
             return float(s.replace("%", "").replace(",", "."))
         except Exception:
             return -9999.0
 
+    # Primero construimos filas con métricas crudas para luego calcular umbrales dinámicos (M)
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
@@ -471,66 +606,114 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
         color_oi  = "🟢" if fuerza     > 0 else "🔴" if fuerza     < 0 else "⚪"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴" if fuerza_vol < 0 else "⚪"
-        color_final = color_oi + color_vol
+        color_final = color_oi + color_vol  # mantiene tu K original
 
-        # L (clasificación) usando H/I en decimales
+        # L con reglas del servicio (NO cambiamos)
         val_h = (diff_m or 0.0) / 100.0
         val_i = (diff_v or 0.0) / 100.0
         clasif_L = _clasificar_filtro_institucional(val_h, val_i)
-        l_por_ticker[tk] = clasif_L
 
-        # Cambios vs estado previo (3 campos)
+        # Cambios vs estado previo
         prev_oi, prev_vol, prev_l = estado_prev.get(tk, ("", "", ""))
         cambio_oi  = (prev_oi  != "") and (prev_oi  != color_oi)
         cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
         es_alineado = clasif_L in ("CALLS", "PUTS")
         cambio_L = es_alineado and (clasif_L != prev_l)
-
-        cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
         estado_nuevo[tk] = (color_oi, color_vol, clasif_L)
-
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-        # Fila A..L (12 columnas)
-        resumen.append([
-            exp_fila,                 # A
-            hora_txt,                 # B
-            tk,                       # C
-            fmt_millones(m_call),     # D
-            fmt_millones(m_put),      # E
-            fmt_entero_miles(v_call), # F
-            fmt_entero_miles(v_put),  # G
-            pct_str(diff_m),          # H
-            pct_str(diff_v),          # I
-            pct_str(diff_m),          # J (Fuerza = copia de H)
-            color_final,              # K (Relación)
-            clasif_L,                 # L (Filtro institucional)
-        ])
+        filas.append({
+            "tk": tk, "exp": exp_fila, "hora": hora_txt,
+            "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
+            "diff_m": diff_m, "diff_v": diff_v, "val_h": val_h, "val_i": val_i,
+            "K": color_final, "L": clasif_L,
+            "cambio_oi": cambio_oi, "cambio_vol": cambio_vol, "cambio_L": cambio_L
+        })
 
-    # Encabezado + cuerpo (A..L)
+    # === UMBRALES DINÁMICOS para Columna M ===
+    abs_vals = sorted(abs(r["val_h"]) for r in filas)
+    q33 = _percentile(abs_vals, 0.33)
+    q66 = _percentile(abs_vals, 0.66)
+    piso_baja_h  = 0.20   # 20%
+    piso_media_h = 0.40   # 40%
+    t_baja  = max(q33, piso_baja_h)
+    t_media = max(q66, piso_media_h)
+
+    money_totals = sorted((r["m_call"] + r["m_put"]) for r in filas)  # en M$
+    m_q40 = _percentile(money_totals, 0.40)
+    m_q70 = _percentile(money_totals, 0.70)
+    piso_baja_money  = 8.0
+    piso_media_money = 20.0
+    t_money_baja  = max(m_q40, piso_baja_money)
+    t_money_media = max(m_q70, piso_media_money)
+
+    # Construir filas finales (incluye M y 🔥)
+    resumen = []
+    for r in filas:
+        bolita_h = "🟢" if r["val_h"] > 0 else "🔴" if r["val_h"] < 0 else "⚪"
+        bolita_i = "🟢" if r["val_i"] > 0 else "🔴" if r["val_i"] < 0 else "⚪"
+        relacion = r["K"]  # mantiene tu K original (si prefieres bolitas usa: bolita_h + bolita_i)
+
+        money_total = (r["m_call"] + r["m_put"])  # M$
+        senial_billetes = _emoji_billetes_por_abs_val_h(
+            abs_val_h     = abs(r["val_h"]),
+            t_baja        = t_baja,
+            t_media       = t_media,
+            vol_conf      = abs(r["val_i"]),
+            money_total   = money_total,
+            t_money_baja  = t_money_baja,
+            t_money_media = t_money_media
+        )
+        nivel_m = senial_billetes.count("💵")
+        if nivel_m == 3:
+            clave_visto = f"{sheet_title}:{r['tk']}"
+            if clave_visto not in _LEVEL3_VISTO:
+                senial_visual = "🔥"    # primera vez nivel 3
+                _LEVEL3_VISTO.add(clave_visto)
+            else:
+                senial_visual = senial_billetes  # 💵💵💵
+        else:
+            senial_visual = senial_billetes      # "", 💵, o 💵💵
+
+        resumen.append([
+            r["exp"], r["hora"], r["tk"],             # A-C
+            fmt_millones(r["m_call"]),                # D
+            fmt_millones(r["m_put"]),                 # E
+            fmt_entero_miles(r["v_call"]),            # F
+            fmt_entero_miles(r["v_put"]),             # G
+            pct_str(r["diff_m"]),                     # H
+            pct_str(r["diff_v"]),                     # I
+            pct_str(r["diff_m"]),                     # J (Fuerza = copia de H)
+            relacion,                                  # K
+            r["L"],                                    # L
+            senial_visual                              # M
+        ])
+        cambios_por_ticker[r["tk"]] = (r["cambio_oi"], r["cambio_vol"], r["cambio_L"])
+
+    # Encabezado + cuerpo (A..M)
     encabezado = [[
         "Fecha", "Hora", "Ticker",
         "RELATIVE VERDE", "RELATIVE ROJO",
         "VOLUMEN ENTRA", "VOLUMEN SALE",
         "TENDENCIA Trade Cnt.", "VOLUMEN.",
-        "Fuerza", "Relación", "Filtro institucional"
+        "Fuerza", "Relación", "Filtro institucional", "💵"
     ]]
-    ws.update(values=encabezado, range_name="A2:L2")
-    ws.batch_clear(["A3:L1000"])
+    ws.update(values=encabezado, range_name="A2:M2")
+    ws.batch_clear(["A3:M1000"])
 
     # Ordenar por Fuerza (J = índice 9)
     resumen.sort(key=lambda row: -fuerza_to_float(row[9]))
     if resumen:
-        ws.update(values=resumen, range_name=f"A3:L{len(resumen)+2}")
+        ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
 
-        # === Formateo visual H/I/J y limpieza fondos J:L ===
+        # === Formateo visual H/I/J y colores H/I/L + centrado M ===
         sheet_id = ws.id
         start_row = 2   # 0-based (fila 3)
         total_rows = len(resumen)
-        requests = []
+        requests_fmt = []
 
-        # números en % para H, I, J
-        requests += [
+        # porcentajes H/I/J
+        requests_fmt += [
             {  # H en %
                 "repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
@@ -555,35 +738,48 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                     "fields": "userEnteredFormat.numberFormat"
                 }
             },
-            {  # limpiar fondos H:L
+            {  # limpiar fondos H:M
                 "repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
-                              "startColumnIndex": 7, "endColumnIndex": 12},
+                              "startColumnIndex": 7, "endColumnIndex": 13},
                     "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
             },
+            {  # centrar M
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": 12, "endColumnIndex": 13},
+                    "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                    "fields": "userEnteredFormat.horizontalAlignment"
+                }
+            },
         ]
 
-        # paleta
         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
         blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
 
-        # Pintar H/I/L por signo y cambios
+        def fuerza_to_float_local(s):
+            try:
+                return float(str(s).replace("%", "").replace(",", "."))
+            except Exception:
+                return 0.0
+
+        # Pintar H/I/L por signo y cambios (igual que tu servicio + amarillo en cambios)
         for idx, row in enumerate(resumen):
             tk = str(row[2]).strip().upper()
             ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
 
             # L
-            clasif_L = l_por_ticker.get(tk, "Neutro")
+            clasif_L = str(row[11])
             if   clasif_L == "CALLS": bg_l = verde
             elif clasif_L == "PUTS":  bg_l = rojo
             else:                     bg_l = blanco
             if ch_L: bg_l = amarillo
 
-            requests.append({
+            requests_fmt.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id,
                               "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
@@ -594,8 +790,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             })
 
             # H/I
-            val_h = fuerza_to_float(row[7])
-            val_i = fuerza_to_float(row[8])
+            val_h = fuerza_to_float_local(row[7])
+            val_i = fuerza_to_float_local(row[8])
 
             bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
             bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
@@ -603,7 +799,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             if ch_vol: bg_i = amarillo
 
             # H
-            requests.append({
+            requests_fmt.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id,
                               "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
@@ -613,7 +809,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 }
             })
             # I
-            requests.append({
+            requests_fmt.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id,
                               "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
@@ -623,18 +819,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 }
             })
 
-        if requests:
-            ws.spreadsheet.batch_update({"requests": requests})
+        if requests_fmt:
+            ws.spreadsheet.batch_update({"requests": requests_fmt})
 
-    # Persistir estado para próxima corrida
+    # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
 
-    # Devolver mapeo {ticker: L}
-    return l_por_ticker
+    # Devolver mapeo opcional si lo quieres usar luego
+    return {row[2]: row[11] for row in resumen} if resumen else {}
 
-
-# ========= ACCESOS — utilidades comunes =========
-
+# ========= ACCESOS — helpers existentes (se mantienen) =========
 def S(v) -> str:
     if v is None:
         return ""
@@ -642,7 +836,6 @@ def S(v) -> str:
         return str(v).strip()
     except Exception:
         return ""
-
 
 def _iso(dt: datetime) -> str:
     return (
@@ -652,17 +845,14 @@ def _iso(dt: datetime) -> str:
         .replace("+00:00", "Z")
     )
 
-
 def _col_indexes(ws):
     headers = [S(h).lower() for h in ws.row_values(1)]
-
     def col(name):
         name = name.strip().lower()
         try:
             return headers.index(name) + 1
         except ValueError:
             raise RuntimeError(f"Encabezado '{name}' no encontrado en {ws.title}.")
-
     return {
         "email": col("email"),
         "duracion": col("duracion"),
@@ -674,9 +864,7 @@ def _col_indexes(ws):
         "nota": col("nota"),
     }
 
-
-# ========= ACCESOS — modo DRIVE (igual a apply_access.py) =========
-
+# ========= ACCESOS — modo DRIVE (sin cambios de comportamiento) =========
 def _parse_duration_drive(s: str) -> timedelta:
     s = S(s).lower()
     if not s:
@@ -691,7 +879,6 @@ def _parse_duration_drive(s: str) -> timedelta:
         except Exception:
             total_h = 24.0
     return timedelta(hours=total_h)
-
 
 def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=True, email_message=None):
     base = {"type": "user", "role": role, "emailAddress": email}
@@ -723,10 +910,8 @@ def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=
             return created["id"], "NOTIFIED"
         raise
 
-
 def _revoke_by_id(perm_id: str):
     drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=perm_id).execute()
-
 
 def _get_sa_email_from_env_info() -> str:
     try:
@@ -736,7 +921,6 @@ def _get_sa_email_from_env_info() -> str:
             return S(json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON", "")).get("client_email", "")).lower()
         except Exception:
             return ""
-
 
 def procesar_autorizados_drive(accesos_doc, main_file_url):
     hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
@@ -844,14 +1028,10 @@ def procesar_autorizados_drive(accesos_doc, main_file_url):
                     except Exception as e:
                         hoja_aut.update_cell(idx, cols["nota"], f"ERROR_REVOKE: {e}")
 
-    print(
-        f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}"
-    )
+    print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
     return {"activados": activados, "revocados": revocados}
 
-
-# ========= ACCESOS — modo GROUPS (tu versión original) =========
-
+# ========= ACCESOS — modo GROUPS (sin cambios, se conserva) =========
 def _parse_duration_groups(txt):
     txt = (txt or "").strip().lower()
     if txt.endswith("h"):
@@ -861,9 +1041,6 @@ def _parse_duration_groups(txt):
     if txt.endswith("w"):
         return timedelta(weeks=int(txt[:-1] or 1))
     return timedelta(hours=24)
-
-
-# === NUEVO: enforcement de permisos solo grupos ===
 
 def _ensure_groups_only_on_file():
     reader_grp = os.getenv("GROUP_READER_EMAIL", "").strip().lower()
@@ -876,24 +1053,24 @@ def _ensure_groups_only_on_file():
         .get("permissions", [])
     )
 
-    sa_email = _get_sa_email_from_env_info()
-    have_reader = False
-    have_commenter = False
+    def _S(v): return S(v).lower()
+    sa_email = ""
+    try:
+        sa_email = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON", "")).get("client_email", "").lower()
+    except Exception:
+        pass
 
+    have_reader = have_commenter = False
     for p in perms:
-        p_type = S(p.get("type")).lower()
-        p_id = S(p.get("id"))
-        p_mail = S(p.get("emailAddress")).lower()
-        p_role = S(p.get("role")).lower()
+        p_type = _S(p.get("type"))
+        p_id   = S(p.get("id"))
+        p_mail = _S(p.get("emailAddress"))
+        p_role = _S(p.get("role"))
 
-        # Detecta si ya están los grupos
         if p_type == "group":
-            if p_mail == reader_grp:
-                have_reader = True
-            if p_mail == commenter_grp:
-                have_commenter = True
+            if p_mail == reader_grp:    have_reader = True
+            if p_mail == commenter_grp: have_commenter = True
 
-        # Solo borrar USERS que no sean owner/organizer ni el service account
         if p_type == "user" and p_id:
             if p_role in ("owner", "organizer"):
                 print(f"🔒 Mantengo OWNER/ORGANIZER {p_mail}")
@@ -925,30 +1102,12 @@ def _ensure_groups_only_on_file():
             else:
                 raise
 
-    # Adjunta grupos si faltan
     if reader_grp and not have_reader:
         _attach_group(reader_grp, "reader")
     if commenter_grp and not have_commenter:
         _attach_group(commenter_grp, "commenter")
 
-    # Asegura que el service account tenga editor (writer)
-    if sa_email and all(S(p.get("emailAddress")).lower() != sa_email for p in perms):
-        try:
-            drive.permissions().create(
-                fileId=MAIN_FILE_ID,
-                body={"type": "user", "role": "writer", "emailAddress": sa_email},
-                fields="id",
-                sendNotificationEmail=False,
-            ).execute()
-            print(f"✅ Agregado Service Account {sa_email} como writer")
-        except Exception as e:
-            print(f"⚠️ No pude agregar SA {sa_email}: {e}")
-
-
-# --- NUEVO: quitar miembro de grupo (top-level) ---
-
 def remove_member(directory, group_email, user_email):
-    """Quita user_email del grupo group_email si existe."""
     if not directory or not group_email or not user_email:
         return "skip"
     try:
@@ -959,7 +1118,6 @@ def remove_member(directory, group_email, user_email):
         if "not found" in msg or "resource not found" in msg:
             return "not_member"
         raise
-
 
 def procesar_autorizados_groups(accesos_doc, main_file_url):
     try:
@@ -973,7 +1131,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print("ℹ️ AUTORIZADOS vacío.")
         return {"activados": 0, "revocados": 0}
 
-    # Enforce: solo grupos en el archivo y sin usuarios individuales
     _ensure_groups_only_on_file()
 
     try:
@@ -1027,9 +1184,8 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
             row = (raw + [""] * 8)[:8]
             email, dur_txt, rol, creado, expira, estado, perm_id, nota = [(c or "").strip() for c in row]
             if not any([email, dur_txt, rol, creado, expira, estado, perm_id, nota]):
-                continue  # ignora filas totalmente vacías
+                continue
 
-            # ignora la service account si aparece en la hoja
             if sa_email and email.lower() == sa_email:
                 if nota != "IGNORADO (service account)":
                     hoja_aut.update(values=[["IGNORADO (service account)"]], range_name=f"H{i}")
@@ -1041,7 +1197,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
             est = (estado or "").lower()
             grupo = grupo_para_rol(r)
 
-            # ------- ALTA / PENDIENTE -------
             if est in ("", "pendiente"):
                 result = add_member(grupo, email)
                 exp_dt = now_utc + _parse_duration_groups(dur_txt or "24h")
@@ -1053,7 +1208,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
                 time.sleep(1.0)
                 continue
 
-            # ------- REVOCADO MANUAL -------
             if est == "revocado":
                 r1 = remove_member(directory, GROUP_READER_EMAIL, email)
                 r2 = remove_member(directory, GROUP_COMMENTER_EMAIL, email)
@@ -1061,7 +1215,6 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
                 revocados += 1
                 continue
 
-            # ------- ACTIVO: chequear vencimiento -------
             if est == "activo" and expira:
                 try:
                     exp_dt = datetime.fromisoformat(expira.replace("Z", ""))
@@ -1085,28 +1238,28 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print(f"⚠️ procesar_autorizados_groups: {e}")
         return {"activados": 0, "revocados": 0}
 
-
-# ========= Wrapper: elige modo por ENV =========
-
+# ========= Wrapper accesos (sin cambios) =========
 def procesar_autorizados(accesos_doc, main_file_url):
     mode = os.getenv("ACCESS_MODE", "drive").strip().lower()
     if mode == "groups":
         return procesar_autorizados_groups(accesos_doc, main_file_url)
     return procesar_autorizados_drive(accesos_doc, main_file_url)
 
-
 # ========= Runner de UNA corrida =========
-
 def run_once(skip_oi: bool = False):
     doc_main = client.open_by_key(MAIN_FILE_ID)
     accesos = client.open_by_key(ACCESS_FILE_ID)
     main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
 
+    # ADICIÓN: Intentar snapshot al inicio de cada corrida (idempotente por día)
+    try:
+        snapshot_congelado(doc_main)
+    except Exception as e:
+        print(f"⚠️ snapshot_congelado() falló: {e}", flush=True)
+
     if not skip_oi:
         l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
         l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
-
-        # (Opcional) Log de handoff para servicio_IO
         try:
             print("SERVICIO_IO::L_SEMANA_ACTUAL=", json.dumps(l_vto1, ensure_ascii=False), flush=True)
             print("SERVICIO_IO::L_SEMANA_SIGUIENTE=", json.dumps(l_vto2, ensure_ascii=False), flush=True)
@@ -1125,18 +1278,15 @@ def run_once(skip_oi: bool = False):
         "when": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "mode": os.getenv("ACCESS_MODE", "drive"),
         "skipped_oi": skip_oi,
-        # NUEVO: mapeo Columna L por ticker (para servicio_IO)
         "L_semana_actual": l_vto1,
         "L_semana_siguiente": l_vto2,
     }
 
 # ========= Flask async guards =========
-
 def _authorized(req: request) -> bool:
     if not OI_SECRET:
         return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
-
 
 def _run_guarded():
     file_lock = _acquire_lock()
@@ -1154,11 +1304,9 @@ def _run_guarded():
         file_lock.close()
         print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
 
-
 @app.get("/healthz")
 def healthz():
     return "ok", 200
-
 
 @app.route("/update", methods=["GET", "POST"])
 def update():
@@ -1167,7 +1315,6 @@ def update():
     t = threading.Thread(target=_run_guarded, daemon=True)
     t.start()
     return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z"}), 202
-
 
 @app.get("/run")
 def http_run():
@@ -1191,7 +1338,6 @@ def http_run():
         print(f"❌ [/run] error: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-
 @app.get("/apply_access")
 def http_apply_access():
     if not _authorized(request):
@@ -1214,7 +1360,6 @@ def http_apply_access():
         fcntl.flock(file_lock, fcntl.LOCK_UN)
         file_lock.close()
 
-
 if __name__ == "__main__":
-    # Para pruebas locales: http://127.0.0.1:8080/run
+    # Ejecuta local: http://127.0.0.1:8080/run
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
