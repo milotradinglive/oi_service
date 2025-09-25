@@ -614,7 +614,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         estado_nuevo[tk] = (color_oi, color_vol, clasif_L, val_h, val_i)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-          filas.append({
+        filas.append({
             "tk": tk, "exp": exp_fila, "hora": hora_txt,
             "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
             "diff_m": diff_m, "diff_v": diff_v, "val_h": val_h, "val_i": val_i,
@@ -623,6 +623,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             # 👇 añade estos dos para poder calcular 🔥 entre corridas
             "prev_h": prev_h, "prev_i": prev_i,
         })
+
 
     # Construir filas finales (solo 🔥)
     resumen = []
