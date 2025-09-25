@@ -476,37 +476,6 @@ def snapshot_congelado(doc_main):
     return True
 
 # ========= Señal M (💵) dinámica + 🔥 primera vez nivel 3 (ADICIÓN) =========
-# estado en memoria por sesión de proceso (no persiste entre pods/restarts)
-_LEVEL3_VISTO = set()  # claves: f"{sheet_title}:{ticker}"
-
-def _percentile(sorted_list, p):
-    if not sorted_list:
-        return 0.0
-    k = max(0, min(len(sorted_list)-1, int(round(p * (len(sorted_list)-1)))))
-    return float(sorted_list[k])
-
-def _emoji_billetes_por_abs_val_h(abs_val_h, t_baja, t_media,
-                                  vol_conf=None,
-                                  money_total=None, t_money_baja=None, t_money_media=None):
-    # Nivel base
-    if abs_val_h < t_baja:
-        lvl = 1
-    elif abs_val_h < t_media:
-        lvl = 2
-    else:
-        lvl = 3
-    # Degradación por poco dinero absoluto
-    if money_total is not None and t_money_baja is not None and t_money_media is not None:
-        if lvl == 3 and money_total < t_money_media:
-            lvl = 2
-        if lvl >= 2 and money_total < t_money_baja:
-            lvl = 1
-    # Penalización por falta de volumen
-    if vol_conf is not None and vol_conf < 0.10 and lvl > 1:
-        lvl -= 1
-    lvl = max(1, min(3, lvl))
-    return "💵" * lvl if lvl >= 2 else ""
-
 # ========= Escritura en Google Sheets (OI) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # --- Recolección OI/Volumen por ticker ---
@@ -538,7 +507,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     # Estado previo / persistencia
     nombre_estado = f"ESTADO__{sheet_title}"
     ws_estado = _ensure_estado_sheet(doc, nombre_estado)
-    estado_prev = _leer_estado(ws_estado)              # {tk: (colorOI, colorVol, estadoL)}
+    estado_prev = _leer_estado(ws_estado)              # {tk: (colorOI, colorVol, estadoL, prev_h, prev_i)}
     estado_nuevo = {}
     cambios_por_ticker = {}
 
@@ -637,66 +606,44 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         clasif_L = _clasificar_filtro_institucional(val_h, val_i)
 
         # Cambios vs estado previo
-        prev_oi, prev_vol, prev_l = estado_prev.get(tk, ("", "", ""))
+        prev_oi, prev_vol, prev_l, prev_h, prev_i = estado_prev.get(tk, ("", "", "", None, None))
         cambio_oi  = (prev_oi  != "") and (prev_oi  != color_oi)
         cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
         es_alineado = clasif_L in ("CALLS", "PUTS")
         cambio_L = es_alineado and (clasif_L != prev_l)
-        estado_nuevo[tk] = (color_oi, color_vol, clasif_L)
+        estado_nuevo[tk] = (color_oi, color_vol, clasif_L, val_h, val_i)
         exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
 
-        filas.append({
+          filas.append({
             "tk": tk, "exp": exp_fila, "hora": hora_txt,
             "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
             "diff_m": diff_m, "diff_v": diff_v, "val_h": val_h, "val_i": val_i,
             "K": color_final, "L": clasif_L,
-            "cambio_oi": cambio_oi, "cambio_vol": cambio_vol, "cambio_L": cambio_L
+            "cambio_oi": cambio_oi, "cambio_vol": cambio_vol, "cambio_L": cambio_L,
+            # 👇 añade estos dos para poder calcular 🔥 entre corridas
+            "prev_h": prev_h, "prev_i": prev_i,
         })
 
-    # === UMBRALES DINÁMICOS para Columna M ===
-    abs_vals = sorted(abs(r["val_h"]) for r in filas)
-    q33 = _percentile(abs_vals, 0.33)
-    q66 = _percentile(abs_vals, 0.66)
-    piso_baja_h  = 0.20   # 20%
-    piso_media_h = 0.40   # 40%
-    t_baja  = max(q33, piso_baja_h)
-    t_media = max(q66, piso_media_h)
-
-    money_totals = sorted((r["m_call"] + r["m_put"]) for r in filas)  # en M$
-    m_q40 = _percentile(money_totals, 0.40)
-    m_q70 = _percentile(money_totals, 0.70)
-    piso_baja_money  = 8.0
-    piso_media_money = 20.0
-    t_money_baja  = max(m_q40, piso_baja_money)
-    t_money_media = max(m_q70, piso_media_money)
-
-    # Construir filas finales (incluye M y 🔥)
+    # Construir filas finales (solo 🔥)
     resumen = []
     for r in filas:
-        bolita_h = "🟢" if r["val_h"] > 0 else "🔴" if r["val_h"] < 0 else "⚪"
-        bolita_i = "🟢" if r["val_i"] > 0 else "🔴" if r["val_i"] < 0 else "⚪"
-        relacion = r["K"]  # mantiene tu K original (si prefieres bolitas usa: bolita_h + bolita_i)
+        relacion = r["K"]  # mantiene tu K original
 
-        money_total = (r["m_call"] + r["m_put"])  # M$
-        senial_billetes = _emoji_billetes_por_abs_val_h(
-            abs_val_h     = abs(r["val_h"]),
-            t_baja        = t_baja,
-            t_media       = t_media,
-            vol_conf      = abs(r["val_i"]),
-            money_total   = money_total,
-            t_money_baja  = t_money_baja,
-            t_money_media = t_money_media
-        )
-        nivel_m = senial_billetes.count("💵")
-        if nivel_m == 3:
-            clave_visto = f"{sheet_title}:{r['tk']}"
-            if clave_visto not in _LEVEL3_VISTO:
-                senial_visual = "🔥"    # primera vez nivel 3
-                _LEVEL3_VISTO.add(clave_visto)
-            else:
-                senial_visual = senial_billetes  # 💵💵💵
-        else:
-            senial_visual = senial_billetes      # "", 💵, o 💵💵
+        # --- Señal 🔥🔥🔥 por impulso simultáneo en H e I (entre corridas)
+        TH_DELTA = 0.10  # 10% en DECIMAL
+        fire = False
+        ph = r.get("prev_h")
+        pi = r.get("prev_i")
+
+        if (ph is not None) and (pi is not None):
+            # CALLS: H>0 e I>0 y ambos SUBEN ≥ 0.10
+            if (r["val_h"] > 0) and (r["val_i"] > 0) and ((r["val_h"] - ph) >= TH_DELTA) and ((r["val_i"] - pi) >= TH_DELTA):
+                fire = True
+            # PUTS: H<0 e I<0 y ambos BAJAN ≥ 0.10
+            if (r["val_h"] < 0) and (r["val_i"] < 0) and ((ph - r["val_h"]) >= TH_DELTA) and ((pi - r["val_i"]) >= TH_DELTA):
+                fire = True
+
+        senial_M = "🔥🔥🔥" if fire else ""
 
         resumen.append([
             r["exp"], r["hora"], r["tk"],             # A-C
@@ -707,19 +654,18 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             pct_str(r["diff_m"]),                     # H
             pct_str(r["diff_v"]),                     # I
             pct_str(r["diff_m"]),                     # J (Fuerza = copia de H)
-            relacion,                                  # K
-            r["L"],                                    # L
-            senial_visual                              # M
+            relacion,                                 # K
+            r["L"],                                   # L
+            senial_M                                   # M
         ])
         cambios_por_ticker[r["tk"]] = (r["cambio_oi"], r["cambio_vol"], r["cambio_L"])
 
-    # Encabezado + cuerpo (A..M)
     encabezado = [[
         "Fecha", "Hora", "Ticker",
         "RELATIVE VERDE", "RELATIVE ROJO",
         "VOLUMEN ENTRA", "VOLUMEN SALE",
         "TENDENCIA Trade Cnt.", "VOLUMEN.",
-        "Fuerza", "Relación", "Filtro institucional", "💵"
+        "Fuerza", "Relación", "Filtro institucional", "🔥"
     ]]
     ws.update(values=encabezado, range_name="A2:M2")
     ws.batch_clear(["A3:M1000"])
