@@ -131,8 +131,20 @@ def fmt_entero_miles(x):
 def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
-# === Clasificador L (se respeta tu versión del servicio, NO se cambia) ===
-def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
+# === Clasificador L (regla bajista inmediata si H<0 e I<0) ===
+def _clasificar_filtro_institucional(val_h: float, val_i: float, *, auto_puts_on_both_negative=True) -> str:
+    """
+    val_h y val_i llegan en DECIMAL (no en %). Ejemplo: +0.42 = 42%, -0.35 = -35%.
+
+    Nueva regla:
+    - Si H < 0 e I < 0 simultáneamente → 'PUTS' directo (bajista confirmado).
+    El resto conserva las reglas anteriores.
+    """
+    # ✅ Bajista confirmado inmediato
+    if auto_puts_on_both_negative and (val_h < 0 and val_i < 0):
+        return "PUTS"
+
+    # Reglas previas
     if (val_h > 0.6) and (val_i > 0.4):
         return "CALLS"
     if (val_h < -0.5) and (val_i < -0.3):
@@ -141,6 +153,7 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
         return "RIESGO"
     if (val_h < -0.4) and (val_i > 0.3):
         return "LIQUIDEZ"
+
     return "Neutro"
 
 # === Persistencia del último color/estado (por hoja objetivo) ===
