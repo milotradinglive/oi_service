@@ -134,17 +134,17 @@ def pct_str(p):
 # === Clasificador L (regla bajista inmediata si H<0 e I<0) ===
 def _clasificar_filtro_institucional(val_h: float, val_i: float, *, auto_puts_on_both_negative=True) -> str:
     """
-    val_h y val_i llegan en DECIMAL (no en %). Ejemplo: +0.42 = 42%, -0.35 = -35%.
+    val_h y val_i llegan en DECIMAL (no en %). Ej: +0.42 = 42%, -0.35 = -35%.
 
-    Nueva regla:
-    - Si H < 0 e I < 0 simultáneamente → 'PUTS' directo (bajista confirmado).
-    El resto conserva las reglas anteriores.
+    Regla nueva:
+    - Si H < 0 e I < 0 a la vez → 'PUTS' directo (bajista confirmado).
+    El resto conserva tus reglas previas.
     """
-    # ✅ Bajista confirmado inmediato
+    # ✅ Bajista confirmado inmediato (OI y Volumen negativos)
     if auto_puts_on_both_negative and (val_h < 0 and val_i < 0):
         return "PUTS"
 
-    # Reglas previas
+    # Reglas previas (se mantienen)
     if (val_h > 0.6) and (val_i > 0.4):
         return "CALLS"
     if (val_h < -0.5) and (val_i < -0.3):
@@ -155,6 +155,7 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float, *, auto_puts_on
         return "LIQUIDEZ"
 
     return "Neutro"
+
 
 # === Persistencia del último color/estado (por hoja objetivo) ===
 def _ensure_estado_sheet(doc, nombre_estado: str):
