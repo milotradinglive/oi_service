@@ -161,12 +161,12 @@ def _ensure_estado_sheet(doc, nombre_estado: str):
     try:
         ws = doc.worksheet(nombre_estado)
     except gspread.exceptions.WorksheetNotFound:
-        ws = doc.add_worksheet(title=nombre_estado, rows=600, cols=4)
-        ws.update(values=[["Ticker", "ColorOI", "ColorVol", "EstadoL"]], range_name="A1")
+        ws = doc.add_worksheet(title=nombre_estado, rows=600, cols=6)
+        ws.update(values=[["Ticker","ColorOI","ColorVol","EstadoL","PrevH","PrevI"]], range_name="A1")
         return ws
-    headers = ws.get_values("A1:D1")
-    if not headers or len(headers[0]) < 4:
-        ws.update(values=[["Ticker", "ColorOI", "ColorVol", "EstadoL"]], range_name="A1")
+    headers = ws.get_values("A1:F1")
+    if not headers or len(headers[0]) < 6:
+        ws.update(values=[["Ticker","ColorOI","ColorVol","EstadoL","PrevH","PrevI"]], range_name="A1")
     return ws
 
 def _leer_estado(ws_estado):
@@ -181,17 +181,27 @@ def _leer_estado(ws_estado):
         c_oi = (r[1] if len(r) > 1 else "").strip()
         c_v  = (r[2] if len(r) > 2 else "").strip()
         e_l  = (r[3] if len(r) > 3 else "").strip()
-        d[t] = (c_oi, c_v, e_l)
+        try:
+            prev_h = float(r[4]) if len(r) > 4 and r[4] != "" else None
+        except:
+            prev_h = None
+        try:
+            prev_i = float(r[5]) if len(r) > 5 and r[5] != "" else None
+        except:
+            prev_i = None
+        d[t] = (c_oi, c_v, e_l, prev_h, prev_i)
     return d
 
 def _escribir_estado(ws_estado, mapa):
-    data = [["Ticker", "ColorOI", "ColorVol", "EstadoL"]]
+    data = [["Ticker","ColorOI","ColorVol","EstadoL","PrevH","PrevI"]]
     for tk in sorted(mapa.keys()):
-        c_oi, c_v, e_l = mapa[tk]
-        data.append([tk, c_oi, c_v, e_l])
-    ws_estado.batch_clear(["A2:D10000"])
+        c_oi, c_v, e_l, prev_h, prev_i = mapa[tk]
+        data.append([tk, c_oi, c_v, e_l,
+                     "" if prev_h is None else prev_h,
+                     "" if prev_i is None else prev_i])
+    ws_estado.batch_clear(["A2:F10000"])
     if len(data) > 1:
-        ws_estado.update(values=data, range_name=f"A1:D{len(data)}")
+        ws_estado.update(values=data, range_name=f"A1:F{len(data)}")
 
 # ========= Lógica expiraciones / datos (OI) =========
 from datetime import datetime as _dt, timedelta as _td
@@ -510,7 +520,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "RELATIVE VERDE", "RELATIVE ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
                 "TENDENCIA Trade Cnt.", "VOLUMEN.",
-                "Fuerza", "Relación", "Filtro institucional", "💵"
+                "Fuerza", "Relación", "Filtro institucional", "🔥"
             ]],
             range_name="A2:M2",
         )
