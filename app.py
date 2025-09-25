@@ -132,30 +132,29 @@ def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
 # === Clasificador L (regla bajista inmediata si H<0 e I<0) ===
-def _clasificar_filtro_institucional(val_h: float, val_i: float, *, auto_puts_on_both_negative=True) -> str:
+def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
     """
-    val_h y val_i llegan en DECIMAL (no en %). Ej: +0.42 = 42%, -0.35 = -35%.
-
-    Regla nueva:
-    - Si H < 0 e I < 0 a la vez → 'PUTS' directo (bajista confirmado).
-    El resto conserva tus reglas previas.
+    Reglas NUEVAS (valores en DECIMAL, no %):
+      - H >= +0.50 e I >= +0.40     → "CALLS" (verde)
+      - H > 0 e I < 0               → "RIESGO" (texto visible, fondo blanco)
+      - H < 0 e I > 0               → "RIESGO" (texto visible, fondo blanco)
+      - H < 0 e I < 0               → "PUTS"  (rojo, prioridad bajista directa)
+      - Otro caso                   → ""      (en blanco / neutro visual)
     """
-    # ✅ Bajista confirmado inmediato (OI y Volumen negativos)
-    if auto_puts_on_both_negative and (val_h < 0 and val_i < 0):
+    # PUTS directo (prioritario)
+    if (val_h < 0) and (val_i < 0):
         return "PUTS"
 
-    # Reglas previas (se mantienen)
-    if (val_h > 0.6) and (val_i > 0.4):
+    # CALLS fuerte (umbrales con igualdad)
+    if (val_h >= 0.50) and (val_i >= 0.40):
         return "CALLS"
-    if (val_h < -0.5) and (val_i < -0.3):
-        return "PUTS"
-    if (val_h > 0.7) and (abs(val_i) <= 0.2):
+
+    # Riesgo por signos opuestos
+    if (val_h > 0 and val_i < 0) or (val_h < 0 and val_i > 0):
         return "RIESGO"
-    if (val_h < -0.4) and (val_i > 0.3):
-        return "LIQUIDEZ"
 
-    return "Neutro"
-
+    # En blanco (neutro visual)
+    return ""
 
 # === Persistencia del último color/estado (por hoja objetivo) ===
 def _ensure_estado_sheet(doc, nombre_estado: str):
