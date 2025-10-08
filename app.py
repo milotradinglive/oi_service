@@ -1,9 +1,13 @@
-# app.py — milo-oi-service (unificado con snapshot + columna M dinámica)
-# - Mantiene toda la lógica/estructura original de tu servicio.
-# - Añade:
-#   1) snapshot_congelado(): copia "Semana actual" -> "dia anterior" 1 vez al iniciar RTH NYSE por sesión.
-#   2) Columna M (💵) con umbrales dinámicos + 🔥 la primera vez que alcanza nivel 3 por hoja.
-# - NO elimina nada; solo mejora sin romper compatibilidad.
+# app.py — milo-oi-service (unificado con snapshot + columnas L, M, N, O, P y Q)
+# - Mantiene toda la estructura/funciones originales.
+# - Implementa exactamente la lógica de L, M, N, O, P y Q del script de Sheets:
+#     L: "CALLS" si H>0.5 e I>0.4 ; "PUTS" si H<0 e I<0 ; "" en otro caso
+#     N: SNAP!N_curr   (m_call - m_put de la corrida de corte anterior)
+#     O: SNAP!N_prev
+#     P: N - O
+#     Q: P / O   (si O==0 → 0)
+#     M: "🔥🔥🔥" si |Q|>=0.5  y el FONDO de M: VERDE si P>0, ROJO si P<0
+# - El snapshot (SNAP__<hoja>) se actualiza SOLO en cortes (:00, :15, :30, :45 NY).
 
 import os
 import time
@@ -51,7 +55,7 @@ ACCESS_FILE_ID = os.getenv("ACCESS_FILE_ID", "1CY06Lw1QYZQEXuMO02EPe8vUOipizuhbW
 ACCESS_SHEET_TITLE = "AUTORIZADOS"
 TRADIER_TOKEN = os.getenv("TRADIER_TOKEN", "")
 
-# ====== Lock inter-proceso (evita ejecuciones simultáneas) ======
+# ====== Lock inter-proceso ======
 LOCK_FILE = "/tmp/oi-updater.lock"
 
 def _acquire_lock():
@@ -70,7 +74,7 @@ def _acquire_lock():
         f.close()
         return None
 
-# ========= Auth desde variable de entorno =========
+# ========= Auth =========
 def make_gspread_and_creds():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
@@ -131,32 +135,21 @@ def fmt_entero_miles(x):
 def pct_str(p):
     return f"{p:.1f}%".replace(".", ",")
 
-# === Clasificador L (regla bajista inmediata si H<0 e I<0) ===
+# === Clasificador L (igual al script original) ===
 def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
     """
-    Reglas NUEVAS (valores en DECIMAL, no %):
-      - H >= +0.50 e I >= +0.40     → "CALLS" (verde)
-      - H > 0 e I < 0               → "RIESGO" (texto visible, fondo blanco)
-      - H < 0 e I > 0               → "RIESGO" (texto visible, fondo blanco)
-      - H < 0 e I < 0               → "PUTS"  (rojo, prioridad bajista directa)
-      - Otro caso                   → ""      (en blanco / neutro visual)
+    Columna L minimal del script:
+    - 'CALLS' si val_h > 0.5 e val_i > 0.4
+    - 'PUTS'  si val_h < 0   e val_i < 0
+    - ''      en otro caso
     """
-    # PUTS directo (prioritario)
+    if (val_h > 0.5) and (val_i > 0.4):
+        return "CALLS"
     if (val_h < 0) and (val_i < 0):
         return "PUTS"
-
-    # CALLS fuerte (umbrales con igualdad)
-    if (val_h >= 0.50) and (val_i >= 0.40):
-        return "CALLS"
-
-    # Riesgo por signos opuestos
-    if (val_h > 0 and val_i < 0) or (val_h < 0 and val_i > 0):
-        return "RIESGO"
-
-    # En blanco (neutro visual)
     return ""
 
-# === Persistencia del último color/estado (por hoja objetivo) ===
+# ========= Estado (se conserva estructura con PrevH/PrevI) =========
 def _ensure_estado_sheet(doc, nombre_estado: str):
     try:
         ws = doc.worksheet(nombre_estado)
@@ -333,9 +326,7 @@ def obtener_dinero(ticker, posicion_fecha=0):
         print(f"❌ Error con {ticker}: {e}")
         return 0, 0, 0.0, 0.0, 0, 0, None
 
-# ========= SNAPSHOT "dia anterior" (ADICIÓN) =========
-# Congela "dia anterior" copiando "Semana actual" (valores+formatos) la PRIMERA VEZ
-# que detecta un NUEVO día hábil con mercado NY abierto (RTH).
+# ========= SNAPSHOT "dia anterior" (se conserva) =========
 NYSE_HOLIDAYS_2025 = {
     "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26",
     "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25",
@@ -427,10 +418,6 @@ def _copy_values_and_formats(doc, src_sheet_id, dst_sheet_id, rows, cols):
     })
 
 def snapshot_congelado(doc_main):
-    """
-    Congela 'dia anterior' copiando 'Semana actual' (valores+formatos) la PRIMERA VEZ
-    que detecta un NUEVO día hábil con mercado NY abierto (RTH). Idempotente por día.
-    """
     global _last_closed_log
     HOJA_ORIGEN = "Semana actual"
     HOJA_DEST   = "dia anterior"
@@ -475,24 +462,54 @@ def snapshot_congelado(doc_main):
     print(f"✅ 'dia anterior' congelado desde 'Semana actual' — {used_rows}x{used_cols} @ {hoy} NY.", flush=True)
     return True
 
-# ========= Señal M (💵) dinámica + 🔥 primera vez nivel 3 (ADICIÓN) =========
-# ========= Escritura en Google Sheets (OI) =========
+# ========= Helpers SNAP__<hoja> para N/O =========
+def _ensure_snapshot_sheet(doc, nombre_snap: str):
+    try:
+        ws = doc.worksheet(nombre_snap)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = doc.add_worksheet(title=nombre_snap, rows=1000, cols=4)
+        ws.update(values=[["Ticker","N_prev","N_curr","ts"]], range_name="A1")
+        return ws
+    headers = ws.get_values("A1:D1")
+    if not headers or len(headers[0]) < 4:
+        ws.update(values=[["Ticker","N_prev","N_curr","ts"]], range_name="A1")
+    return ws
+
+def _leer_snap_both_map(ws_snap):
+    """
+    Devuelve {ticker: (N_prev, N_curr)} leyendo columnas B y C.
+    """
+    rows = ws_snap.get_all_values()
+    d = {}
+    for r in rows[1:]:
+        if not r:
+            continue
+        tk = (r[0] or "").strip().upper()
+        if not tk:
+            continue
+        try:
+            n_prev = float(str(r[1]).replace(",", ".")) if len(r) > 1 and r[1] != "" else None
+        except Exception:
+            n_prev = None
+        try:
+            n_curr = float(str(r[2]).replace(",", ".")) if len(r) > 2 and r[2] != "" else None
+        except Exception:
+            n_curr = None
+        d[tk] = (n_prev, n_curr)
+    return d
+
+def _es_corte_quince(dt_ny=None):
+    if dt_ny is None:
+        dt_ny = _now_ny()
+    return (dt_ny.minute % 15) == 0
+
+# ========= Escritura en Google Sheets (incluye L, M, N, O, P, Q) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
-    # --- Recolección OI/Volumen por ticker ---
+    # --- Abrir hoja destino ---
     try:
         ws = doc.worksheet(sheet_title)
     except WorksheetNotFound:
-        ws = doc.add_worksheet(title=sheet_title, rows=1000, cols=15)
-        ws.update(
-            values=[[
-                "Fecha", "Hora", "Ticker",
-                "Trade Cnt VERDE", "Trade Cnt ROJO",
-                "VOLUMEN ENTRA", "VOLUMEN SALE",
-                "TENDENCIA Trade Cnt.", "VOLUMEN.",
-                "Fuerza", "Relación", "Filtro institucional", "🔥"
-            ]],
-            range_name="A2:M2",
-        )
+        ws = doc.add_worksheet(title=sheet_title, rows=1200, cols=20)
 
     # Hora NY
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
@@ -504,14 +521,19 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
-    # Estado previo / persistencia
+    # Estado previo (colores/prevH/prevI)
     nombre_estado = f"ESTADO__{sheet_title}"
     ws_estado = _ensure_estado_sheet(doc, nombre_estado)
     estado_prev = _leer_estado(ws_estado)              # {tk: (colorOI, colorVol, estadoL, prev_h, prev_i)}
     estado_nuevo = {}
     cambios_por_ticker = {}
 
-    # Recolecta datos OI
+    # SNAP para N/O
+    nombre_snap = f"SNAP__{sheet_title}"
+    ws_snap = _ensure_snapshot_sheet(doc, nombre_snap)
+    snap_map = _leer_snap_both_map(ws_snap)            # {tk: (O, N)}
+
+    # Recolecta datos OI por ticker
     datos = []
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
@@ -519,7 +541,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # A1: fecha visible (máxima exp si hay, si no, viernes objetivo)
+    # A1: fecha visible
     exp_dates = []
     for _, _, _, _, exp_vto, _ in datos:
         if exp_vto:
@@ -550,10 +572,26 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
+    # Encabezado completo A..Q
+    encabezado = [[
+        "Fecha", "Hora", "Ticker",                 # A-C
+        "Trade Cnt VERDE", "Trade Cnt ROJO",       # D-E (dinero CALL / PUT en MM)
+        "VOLUMEN ENTRA", "VOLUMEN SALE",           # F-G (volumen CALL/PUT)
+        "TENDENCIA Trade Cnt.", "VOLUMEN.",        # H-I (% normalizado de dinero/volumen)
+        "Fuerza",                                  # J (copia H)
+        "Relación",                                # K (bolitas)
+        "Filtro institucional",                    # L (CALLS/PUTS/"")
+        "🔥",                                       # M (3 fuegos si |Q|>=0.5)
+        "D−E (N)",                                 # N (SNAP N_curr)
+        "N previo (O)",                            # O (SNAP N_prev)
+        "Δ (P=N−O)",                               # P
+        "Δ% (Q=P/O)"                               # Q
+    ]]
+    ws.update(values=encabezado, range_name="A2:Q2")
     try:
-        ws.batch_clear(["B1:N1"])  # limpiamos fila 1 excepto A1 (dejamos espacio si ya existía algo)
+        ws.batch_clear(["A3:Q1000"])
     except Exception as e:
-        print(f"⚠️ No se pudo limpiar B1:N1 en {ws.title}: {e}")
+        print(f"⚠️ No se pudo limpiar A3:Q1000 en {ws.title}: {e}")
 
     # Agregado por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
@@ -563,20 +601,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Construcción base + cálculo H/I/J + clasificador L
+    # Construcción de filas + L,M,N,O,P,Q
     filas = []
-    def fuerza_to_float(s):
-        try:
-            return float(s.replace("%", "").replace(",", "."))
-        except Exception:
-            return -9999.0
-
-    # Primero construimos filas con métricas crudas para luego calcular umbrales dinámicos (M)
     for tk in sorted(agg.keys()):
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
 
-        # % dif normalizada dinero (H/J)
+        # % dif normalizada dinero (H / J)
         if m_call <= 0 and m_put <= 0:
             diff_m = fuerza = 0.0
         else:
@@ -598,131 +629,130 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
         color_oi  = "🟢" if fuerza     > 0 else "🔴" if fuerza     < 0 else "⚪"
         color_vol = "🟢" if fuerza_vol > 0 else "🔴" if fuerza_vol < 0 else "⚪"
-        color_final = color_oi + color_vol  # mantiene tu K original
+        relacion  = color_oi + color_vol
 
-        # L con reglas del servicio (NO cambiamos)
+        # L (igual al script original, usando H/I en DECIMAL)
         val_h = (diff_m or 0.0) / 100.0
         val_i = (diff_v or 0.0) / 100.0
         clasif_L = _clasificar_filtro_institucional(val_h, val_i)
 
-        # Cambios vs estado previo
+        # Estado anterior para banderas visuales (H/I/L)
         prev_oi, prev_vol, prev_l, prev_h, prev_i = estado_prev.get(tk, ("", "", "", None, None))
         cambio_oi  = (prev_oi  != "") and (prev_oi  != color_oi)
         cambio_vol = (prev_vol != "") and (prev_vol != color_vol)
         es_alineado = clasif_L in ("CALLS", "PUTS")
         cambio_L = es_alineado and (clasif_L != prev_l)
-        estado_nuevo[tk] = (color_oi, color_vol, clasif_L, val_h, val_i)
-        exp_fila = (agg[tk]["EXP"] or a1_value or fecha_txt)
+
+        # --- N, O desde SNAP + P, Q + M (3 fuegos por Q) ---
+        O_prev, N_curr = snap_map.get(tk, (None, None))   # O, N
+        P_delta = 0.0
+        Q_rel = 0.0
+        if (N_curr is not None) and (O_prev is not None):
+            P_delta = N_curr - O_prev
+            Q_rel = (P_delta / O_prev) if O_prev not in (0, None) else 0.0
+
+        M_text = "🔥🔥🔥" if abs(Q_rel) >= 0.5 else ""
 
         filas.append({
-            "tk": tk, "exp": exp_fila, "hora": hora_txt,
-            "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
-            "diff_m": diff_m, "diff_v": diff_v, "val_h": val_h, "val_i": val_i,
-            "K": color_final, "L": clasif_L,
+            "tk": tk,
+            "exp": (agg[tk]["EXP"] or a1_value or fecha_txt),
+            "hora": hora_txt,
+            "m_call": m_call, "m_put": m_put,
+            "v_call": v_call, "v_put": v_put,
+            "diff_m": diff_m, "diff_v": diff_v,
+            "val_h": val_h, "val_i": val_i,
+            "rel": relacion, "L": clasif_L, "M": M_text,
+            "N": N_curr, "O": O_prev, "P": P_delta, "Q": Q_rel,
             "cambio_oi": cambio_oi, "cambio_vol": cambio_vol, "cambio_L": cambio_L,
-            # 👇 añade estos dos para poder calcular 🔥 entre corridas
-            "prev_h": prev_h, "prev_i": prev_i,
         })
 
+        # Guardar estado para siguiente corrida
+        estado_nuevo[tk] = (color_oi, color_vol, clasif_L, val_h, val_i)
 
-    # Construir filas finales (solo 🔥)
+    # Ordenar por Fuerza (J)
+    def fuerza_to_float(s):
+        try:
+            return float(str(s).replace("%", "").replace(",", "."))
+        except Exception:
+            return -9999.0
+
+    filas.sort(key=lambda r: -fuerza_to_float(r["diff_m"]))
+
+    # Preparar matriz de escritura A..Q
     resumen = []
     for r in filas:
-        relacion = r["K"]  # mantiene tu K original
-
-        # --- Señal 🔥🔥🔥 por impulso simultáneo en H e I (entre corridas)
-        TH_DELTA = 0.10  # 10% en DECIMAL
-        fire = False
-        ph = r.get("prev_h")
-        pi = r.get("prev_i")
-
-        if (ph is not None) and (pi is not None):
-            # CALLS: H>0 e I>0 y ambos SUBEN ≥ 0.10
-            if (r["val_h"] > 0) and (r["val_i"] > 0) and ((r["val_h"] - ph) >= TH_DELTA) and ((r["val_i"] - pi) >= TH_DELTA):
-                fire = True
-            # PUTS: H<0 e I<0 y ambos BAJAN ≥ 0.10
-            if (r["val_h"] < 0) and (r["val_i"] < 0) and ((ph - r["val_h"]) >= TH_DELTA) and ((pi - r["val_i"]) >= TH_DELTA):
-                fire = True
-
-        senial_M = "🔥🔥🔥" if fire else ""
-
         resumen.append([
-            r["exp"], r["hora"], r["tk"],             # A-C
-            fmt_millones(r["m_call"]),                # D
-            fmt_millones(r["m_put"]),                 # E
-            fmt_entero_miles(r["v_call"]),            # F
-            fmt_entero_miles(r["v_put"]),             # G
-            pct_str(r["diff_m"]),                     # H
-            pct_str(r["diff_v"]),                     # I
-            pct_str(r["diff_m"]),                     # J (Fuerza = copia de H)
-            relacion,                                 # K
-            r["L"],                                   # L
-            senial_M                                   # M
+            r["exp"], r["hora"], r["tk"],                   # A-C
+            fmt_millones(r["m_call"]),                      # D
+            fmt_millones(r["m_put"]),                       # E
+            fmt_entero_miles(r["v_call"]),                  # F
+            fmt_entero_miles(r["v_put"]),                   # G
+            pct_str(r["diff_m"]),                           # H
+            pct_str(r["diff_v"]),                           # I
+            pct_str(r["diff_m"]),                           # J (Fuerza)
+            r["rel"],                                       # K
+            r["L"],                                         # L
+            r["M"],                                         # M (texto)
+            "" if r["N"] is None else r["N"],               # N (num)
+            "" if r["O"] is None else r["O"],               # O (num)
+            r["P"],                                         # P (num)
+            r["Q"],                                         # Q (num)
         ])
         cambios_por_ticker[r["tk"]] = (r["cambio_oi"], r["cambio_vol"], r["cambio_L"])
 
-    encabezado = [[
-        "Fecha", "Hora", "Ticker",
-        "Trade Cnt VERDE", "Trade Cnt ROJO",
-        "VOLUMEN ENTRA", "VOLUMEN SALE",
-        "TENDENCIA Trade Cnt.", "VOLUMEN.",
-        "Fuerza", "Relación", "Filtro institucional", "🔥"
-    ]]
-    ws.update(values=encabezado, range_name="A2:M2")
-    ws.batch_clear(["A3:M1000"])
-
-    # Ordenar por Fuerza (J = índice 9)
-    resumen.sort(key=lambda row: -fuerza_to_float(row[9]))
     if resumen:
-        ws.update(values=resumen, range_name=f"A3:M{len(resumen)+2}")
+        ws.update(values=resumen, range_name=f"A3:Q{len(resumen)+2}", value_input_option="USER_ENTERED")
 
-        # === Formateo visual H/I/J y colores H/I/L + centrado M ===
+    # === Formato: % en H/I/J/Q; color H/I/L; fondo dinámico M según (P,Q) ===
+    if resumen:
         sheet_id = ws.id
-        start_row = 2   # 0-based (fila 3)
+        start_row = 2   # 0-based para fila 3
         total_rows = len(resumen)
         requests_fmt = []
 
-        # porcentajes H/I/J
+        # % en H, I, J, Q
         requests_fmt += [
-            {  # H en %
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
-                              "startColumnIndex": 7, "endColumnIndex": 8},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                    "fields": "userEnteredFormat.numberFormat"
-                }
+            {  # H
+                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                                         "endRowIndex": start_row + total_rows,
+                                         "startColumnIndex": 7, "endColumnIndex": 8},
+                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                               "fields": "userEnteredFormat.numberFormat"}
             },
-            {  # I en %
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
-                              "startColumnIndex": 8, "endColumnIndex": 9},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                    "fields": "userEnteredFormat.numberFormat"
-                }
+            {  # I
+                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                                         "endRowIndex": start_row + total_rows,
+                                         "startColumnIndex": 8, "endColumnIndex": 9},
+                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                               "fields": "userEnteredFormat.numberFormat"}
             },
-            {  # J en %
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
-                              "startColumnIndex": 9, "endColumnIndex": 10},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                    "fields": "userEnteredFormat.numberFormat"
-                }
+            {  # J
+                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                                         "endRowIndex": start_row + total_rows,
+                                         "startColumnIndex": 9, "endColumnIndex": 10},
+                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                               "fields": "userEnteredFormat.numberFormat"}
             },
-            {  # limpiar fondos H:M
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
-                              "startColumnIndex": 7, "endColumnIndex": 13},
-                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
-                    "fields": "userEnteredFormat.backgroundColor"
-                }
+            {  # Q
+                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                                         "endRowIndex": start_row + total_rows,
+                                         "startColumnIndex": 16, "endColumnIndex": 17},
+                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                               "fields": "userEnteredFormat.numberFormat"}
+            },
+            {  # limpiar fondos H..M y L
+                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                                         "endRowIndex": start_row + total_rows,
+                                         "startColumnIndex": 7, "endColumnIndex": 13},
+                               "cell": {"userEnteredFormat": {"backgroundColor": {"red":1,"green":1,"blue":1}}},
+                               "fields": "userEnteredFormat.backgroundColor"}
             },
             {  # centrar M
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
-                              "startColumnIndex": 12, "endColumnIndex": 13},
-                    "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
-                    "fields": "userEnteredFormat.horizontalAlignment"
-                }
+                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                                         "endRowIndex": start_row + total_rows,
+                                         "startColumnIndex": 12, "endColumnIndex": 13},
+                               "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                               "fields": "userEnteredFormat.horizontalAlignment"}
             },
         ]
 
@@ -737,7 +767,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             except Exception:
                 return 0.0
 
-        # Pintar H/I/L por signo y cambios (igual que tu servicio + amarillo en cambios)
         for idx, row in enumerate(resumen):
             tk = str(row[2]).strip().upper()
             ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
@@ -748,7 +777,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             elif clasif_L == "PUTS":  bg_l = rojo
             else:                     bg_l = blanco
             if ch_L: bg_l = amarillo
-
             requests_fmt.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id,
@@ -759,44 +787,107 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 }
             })
 
-            # H/I
+            # H/I por signo (+ cambios = amarillo)
             val_h = fuerza_to_float_local(row[7])
             val_i = fuerza_to_float_local(row[8])
-
             bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
             bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
             if ch_oi:  bg_h = amarillo
             if ch_vol: bg_i = amarillo
 
-            # H
-            requests_fmt.append({
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id,
-                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                              "startColumnIndex": 7, "endColumnIndex": 8},
-                    "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
-                    "fields": "userEnteredFormat.backgroundColor"
+            requests_fmt += [
+                {"repeatCell": {"range": {"sheetId": sheet_id,
+                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                                          "startColumnIndex": 7, "endColumnIndex": 8},
+                                "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
+                                "fields": "userEnteredFormat.backgroundColor"}},
+                {"repeatCell": {"range": {"sheetId": sheet_id,
+                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                                          "startColumnIndex": 8, "endColumnIndex": 9},
+                                "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
+                                "fields": "userEnteredFormat.backgroundColor"}},
+            ]
+
+        # Fondo de M dinámico = verde si (|Q|>=0.5 y P>0), rojo si (|Q|>=0.5 y P<0)
+        requests_fmt.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                          "endRowIndex": start_row + total_rows,
+                          "startColumnIndex": 12, "endColumnIndex": 13},
+                "cell": {"userEnteredFormat": {"backgroundColor": blanco}},
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        })
+        requests_fmt += [
+            {   # VERDE si 3 fuegos y P>0
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet_id,
+                            "startRowIndex": start_row,
+                            "endRowIndex": start_row + total_rows,
+                            "startColumnIndex": 12,
+                            "endColumnIndex": 13
+                        }],
+                        "booleanRule": {
+                            "condition": {"type": "CUSTOM_FORMULA",
+                                          "values": [{"userEnteredValue": "=Y(ABS($Q3)>=0,5;$P3>0)"}]},
+                            "format": {"backgroundColor": verde}
+                        }
+                    },
+                    "index": 0
                 }
-            })
-            # I
-            requests_fmt.append({
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id,
-                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                              "startColumnIndex": 8, "endColumnIndex": 9},
-                    "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
-                    "fields": "userEnteredFormat.backgroundColor"
+            },
+            {   # ROJO si 3 fuegos y P<0
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet_id,
+                            "startRowIndex": start_row,
+                            "endRowIndex": start_row + total_rows,
+                            "startColumnIndex": 12,
+                            "endColumnIndex": 13
+                        }],
+                        "booleanRule": {
+                            "condition": {"type": "CUSTOM_FORMULA",
+                                          "values": [{"userEnteredValue": "=Y(ABS($Q3)>=0,5;$P3<0)"}]},
+                            "format": {"backgroundColor": rojo}
+                        }
+                    },
+                    "index": 0
                 }
-            })
+            }
+        ]
 
         if requests_fmt:
             ws.spreadsheet.batch_update({"requests": requests_fmt})
 
+    # === SNAP: actualizar SOLO en cortes :00/:15/:30/:45 NY ===
+    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_corte_quince(now_ny):
+        # N_new = m_call - m_put (1 decimal) por ticker
+        n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
+        ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
+
+        # armar tabla completa ordenada por ticker
+        data = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_new_map.keys()):
+            prev_O, prev_N = snap_map.get(tk, (None, None))
+            n_prev = prev_N if prev_N is not None else ""
+            n_curr = n_new_map[tk]
+            data.append([tk, n_prev, n_curr, ts_now])
+
+        try:
+            ws_snap.batch_clear(["A2:D10000"])
+        except Exception:
+            pass
+        ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
+        print(f"🧊 SNAP actualizado ({nombre_snap}) @ {ts_now} NY (corte 15m).", flush=True)
+
     # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
 
-    # Devolver mapeo opcional si lo quieres usar luego
-    return {row[2]: row[11] for row in resumen} if resumen else {}
+    # Devolver mapeo L por ticker (como antes)
+    return {r["tk"]: r["L"] for r in filas} if filas else {}
 
 # ========= ACCESOS — helpers existentes (se mantienen) =========
 def S(v) -> str:
@@ -1001,7 +1092,7 @@ def procesar_autorizados_drive(accesos_doc, main_file_url):
     print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
     return {"activados": activados, "revocados": revocados}
 
-# ========= ACCESOS — modo GROUPS (sin cambios, se conserva) =========
+# ========= ACCESOS — modo GROUPS (opcional; se conserva) =========
 def _parse_duration_groups(txt):
     txt = (txt or "").strip().lower()
     if txt.endswith("h"):
@@ -1208,7 +1299,7 @@ def procesar_autorizados_groups(accesos_doc, main_file_url):
         print(f"⚠️ procesar_autorizados_groups: {e}")
         return {"activados": 0, "revocados": 0}
 
-# ========= Wrapper accesos (sin cambios) =========
+# ========= Wrapper accesos =========
 def procesar_autorizados(accesos_doc, main_file_url):
     mode = os.getenv("ACCESS_MODE", "drive").strip().lower()
     if mode == "groups":
@@ -1221,7 +1312,7 @@ def run_once(skip_oi: bool = False):
     accesos = client.open_by_key(ACCESS_FILE_ID)
     main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
 
-    # ADICIÓN: Intentar snapshot al inicio de cada corrida (idempotente por día)
+    # Snapshot “día anterior” (idempotente por día)
     try:
         snapshot_congelado(doc_main)
     except Exception as e:
