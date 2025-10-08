@@ -758,7 +758,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                                "fields": "userEnteredFormat.numberFormat"}
             },
-            {  # limpiar fondos H..M y L
+            {  # limpiar fondos H..M
                 "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
                                          "endRowIndex": start_row + total_rows,
                                          "startColumnIndex": 7, "endColumnIndex": 13},
@@ -774,7 +774,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             },
         ]
 
-         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
+        verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
         blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
@@ -834,7 +834,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                                 "fields": "userEnteredFormat.backgroundColor"}}
             ]
 
-        # Base de M = blanco (una sola vez, para todo el rango)
+        # Base de M = blanco (rango completo)
         requests_fmt.append({
             "repeatCell": {
                 "range": {"sheetId": sheet_id, "startRowIndex": start_row,
@@ -890,7 +890,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         if requests_fmt:
             ws.spreadsheet.batch_update({"requests": requests_fmt})
 
-
     # === SNAP: actualizar SOLO en cierre de HORA NY ===
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
     hour_key  = f"last_hour_snap__{sheet_title}"
@@ -898,33 +897,30 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     last_hour = _meta_read(ws_meta, hour_key, "")
 
     if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
-        # ... (resto igual)
-    # N_new = m_call - m_put (1 decimal) por ticker
-    n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
-    ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
+        # N_new = m_call - m_put (1 decimal) por ticker
+        n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
+        ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
 
-    # armar tabla completa ordenada por ticker
-    data = [["Ticker","N_prev","N_curr","ts"]]
-    for tk in sorted(n_new_map.keys()):
-        prev_O, prev_N = snap_map.get(tk, (None, None))
-        n_prev = prev_N if prev_N is not None else ""
-        n_curr = n_new_map[tk]
-        data.append([tk, n_prev, n_curr, ts_now])
+        # armar tabla completa ordenada por ticker
+        data = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_new_map.keys()):
+            prev_O, prev_N = snap_map.get(tk, (None, None))
+            n_prev = prev_N if prev_N is not None else ""
+            n_curr = n_new_map[tk]
+            data.append([tk, n_prev, n_curr, ts_now])
 
-    try:
-        ws_snap.batch_clear(["A2:D10000"])
-    except Exception:
-        pass
-    ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
-    _meta_write(ws_meta, hour_key, curr_hour)
-    print(f"🧊 SNAP 1H actualizado ({nombre_snap}) @ {ts_now} NY (cierre de hora).", flush=True)
+        try:
+            ws_snap.batch_clear(["A2:D10000"])
+        except Exception:
+            pass
+        ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
+        _meta_write(ws_meta, hour_key, curr_hour)
+        print(f"🧊 SNAP 1H actualizado ({nombre_snap}) @ {ts_now} NY (cierre de hora).", flush=True)
 
-    # 👉 ventana de 5 minutos para M SOLO al cierre de hora
-    flash_until = (now_ny + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-    _meta_write(ws_meta, flash_key, flash_until)
-    print(f"⏱️ Señal M activa hasta {flash_until} NY para {sheet_title}", flush=True)
-
-
+        # 👉 ventana de 5 minutos para M SOLO al cierre de hora
+        flash_until = (now_ny + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        _meta_write(ws_meta, flash_key, flash_until)
+        print(f"⏱️ Señal M activa hasta {flash_until} NY para {sheet_title}", flush=True)
 
     # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
