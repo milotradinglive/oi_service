@@ -342,6 +342,12 @@ def _is_trading_day(dt_ny):
         return False
     return dt_ny.strftime("%Y-%m-%d") not in NYSE_HOLIDAYS_2025
 
+def _es_cierre_hora(dt_ny=None):
+    """True exactamente cuando cierra la vela 1H (minuto == 0, zona NY)."""
+    if dt_ny is None:
+        dt_ny = _now_ny()
+    return dt_ny.minute == 0
+
 def _is_rth_open(dt_ny):
     t = dt_ny.time()
     return (t >= datetime.strptime("09:30:00", "%H:%M:%S").time()
@@ -497,11 +503,6 @@ def _leer_snap_both_map(ws_snap):
             n_curr = None
         d[tk] = (n_prev, n_curr)
     return d
-
-def _es_corte_quince(dt_ny=None):
-    if dt_ny is None:
-        dt_ny = _now_ny()
-    return (dt_ny.minute % 15) == 0
 
 # ========= Escritura en Google Sheets (incluye L, M, N, O, P, Q) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
@@ -862,8 +863,14 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         if requests_fmt:
             ws.spreadsheet.batch_update({"requests": requests_fmt})
 
-    # === SNAP: actualizar SOLO en cortes :00/:15/:30/:45 NY ===
-    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_corte_quince(now_ny):
+    # === SNAP: actualizar SOLO en cierre de HORA NY (vela 1H cerrada) ===
+    # Usamos META para idempotencia por hora (evita dobles escrituras si hay varias corridas en el mismo minuto).
+    ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
+    hour_key   = f"last_hour_snap__{sheet_title}"
+    curr_hour  = now_ny.strftime("%Y-%m-%d %H")  # p.ej. '2025-10-08 10'
+    last_hour  = _meta_read(ws_meta, hour_key, "")
+
+    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
         # N_new = m_call - m_put (1 decimal) por ticker
         n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
@@ -881,7 +888,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         except Exception:
             pass
         ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
-        print(f"🧊 SNAP actualizado ({nombre_snap}) @ {ts_now} NY (corte 15m).", flush=True)
+        _meta_write(ws_meta, hour_key, curr_hour)
+        print(f"🧊 SNAP 1H actualizado ({nombre_snap}) @ {ts_now} NY (cierre de hora).", flush=True)
+
 
     # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
