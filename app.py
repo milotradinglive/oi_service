@@ -7,7 +7,7 @@
 #     P: N - O
 #     Q: P / O   (si O==0 → 0)
 #     M: "🔥🔥🔥" si |Q|>=0.5  y el FONDO de M: VERDE si P>0, ROJO si P<0
-# - El snapshot (SNAP__<hoja>) se actualiza SOLO en cortes (:00, :15, :30, :45 NY).
+# - El snapshot (SNAP__<hoja>) se actualiza SOLO al cierre de cada hora (minuto 00 NY).
 
 import os
 import time
@@ -503,6 +503,15 @@ def _leer_snap_both_map(ws_snap):
             n_curr = None
         d[tk] = (n_prev, n_curr)
     return d
+def _parse_ny_naive(ts_str):
+    if not ts_str:
+        return None
+    try:
+        ny = pytz.timezone("America/New_York")
+        dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        return ny.localize(dt)
+    except Exception:
+        return None
 
 # ========= Escritura en Google Sheets (incluye L, M, N, O, P, Q) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha):
@@ -519,8 +528,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt = now_ny.strftime("%H:%M:%S")
 
+    # ⚡ Ventana de "flash" M (5 minutos post-cierre de hora)
+    ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
+    flash_key = f"m_flash_until__{sheet_title}"
+    flash_until_str = _meta_read(ws_meta, flash_key, "")
+    flash_until_dt = _parse_ny_naive(flash_until_str)
+    within_flash = (flash_until_dt is not None) and (now_ny <= flash_until_dt)
+
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
+
 
     # Estado previo (colores/prevH/prevI)
     nombre_estado = f"ESTADO__{sheet_title}"
@@ -652,7 +669,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             P_delta = N_curr - O_prev
             Q_rel = (P_delta / O_prev) if O_prev not in (0, None) else 0.0
 
-        M_text = "🔥🔥🔥" if abs(Q_rel) >= 0.5 else ""
+        M_text = "🔥🔥🔥" if within_flash and (abs(Q_rel) >= 0.5) else ""
 
         filas.append({
             "tk": tk,
@@ -778,38 +795,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
             elif clasif_L == "PUTS":  bg_l = rojo
             else:                     bg_l = blanco
             if ch_L: bg_l = amarillo
-            requests_fmt.append({
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id,
-                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                              "startColumnIndex": 11, "endColumnIndex": 12},
-                    "cell": {"userEnteredFormat": {"backgroundColor": bg_l}},
-                    "fields": "userEnteredFormat.backgroundColor"
-                }
-            })
-
-            # H/I por signo (+ cambios = amarillo)
-            val_h = fuerza_to_float_local(row[7])
-            val_i = fuerza_to_float_local(row[8])
-            bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
-            bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
-            if ch_oi:  bg_h = amarillo
-            if ch_vol: bg_i = amarillo
-
-            requests_fmt += [
-                {"repeatCell": {"range": {"sheetId": sheet_id,
-                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                          "startColumnIndex": 7, "endColumnIndex": 8},
-                                "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
-                                "fields": "userEnteredFormat.backgroundColor"}},
-                {"repeatCell": {"range": {"sheetId": sheet_id,
-                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                          "startColumnIndex": 8, "endColumnIndex": 9},
-                                "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
-                                "fields": "userEnteredFormat.backgroundColor"}},
-            ]
-
-        # Fondo de M dinámico = verde si (|Q|>=0.5 y P>0), rojo si (|Q|>=0.5 y P<0)
+          # Fondo base de M = blanco (una sola vez)
         requests_fmt.append({
             "repeatCell": {
                 "range": {"sheetId": sheet_id, "startRowIndex": start_row,
@@ -819,46 +805,53 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 "fields": "userEnteredFormat.backgroundColor"
             }
         })
-        requests_fmt += [
-            {   # VERDE si 3 fuegos y P>0
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [{
-                            "sheetId": sheet_id,
-                            "startRowIndex": start_row,
-                            "endRowIndex": start_row + total_rows,
-                            "startColumnIndex": 12,
-                            "endColumnIndex": 13
-                        }],
-                        "booleanRule": {
-                            "condition": {"type": "CUSTOM_FORMULA",
-                                          "values": [{"userEnteredValue": "=Y(ABS($Q3)>=0,5;$P3>0)"}]},
-                            "format": {"backgroundColor": verde}
-                        }
-                    },
-                    "index": 0
-                }
-            },
-            {   # ROJO si 3 fuegos y P<0
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [{
-                            "sheetId": sheet_id,
-                            "startRowIndex": start_row,
-                            "endRowIndex": start_row + total_rows,
-                            "startColumnIndex": 12,
-                            "endColumnIndex": 13
-                        }],
-                        "booleanRule": {
-                            "condition": {"type": "CUSTOM_FORMULA",
-                                          "values": [{"userEnteredValue": "=Y(ABS($Q3)>=0,5;$P3<0)"}]},
-                            "format": {"backgroundColor": rojo}
-                        }
-                    },
-                    "index": 0
-                }
+
+        # VERDE si hay "🔥🔥🔥" y P>0
+        requests_fmt.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 12,
+                        "endColumnIndex": 13
+                    }],
+                    "booleanRule": {
+                        "condition": {
+                            "type": "CUSTOM_FORMULA",
+                            "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3>0)"}]
+                        },
+                        "format": {"backgroundColor": verde}
+                    }
+                },
+                "index": 0
             }
-        ]
+        })
+
+        # ROJO si hay "🔥🔥🔥" y P<0
+        requests_fmt.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 12,
+                        "endColumnIndex": 13
+                    }],
+                    "booleanRule": {
+                        "condition": {
+                            "type": "CUSTOM_FORMULA",
+                            "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3<0)"}]
+                        },
+                        "format": {"backgroundColor": rojo}
+                    }
+                },
+                "index": 0
+            }
+        })
+
 
         if requests_fmt:
             ws.spreadsheet.batch_update({"requests": requests_fmt})
@@ -870,26 +863,32 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
     curr_hour  = now_ny.strftime("%Y-%m-%d %H")  # p.ej. '2025-10-08 10'
     last_hour  = _meta_read(ws_meta, hour_key, "")
 
-    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
-        # N_new = m_call - m_put (1 decimal) por ticker
-        n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
-        ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
+ if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
+    # N_new = m_call - m_put (1 decimal) por ticker
+    n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
+    ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
 
-        # armar tabla completa ordenada por ticker
-        data = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_new_map.keys()):
-            prev_O, prev_N = snap_map.get(tk, (None, None))
-            n_prev = prev_N if prev_N is not None else ""
-            n_curr = n_new_map[tk]
-            data.append([tk, n_prev, n_curr, ts_now])
+    # armar tabla completa ordenada por ticker
+    data = [["Ticker","N_prev","N_curr","ts"]]
+    for tk in sorted(n_new_map.keys()):
+        prev_O, prev_N = snap_map.get(tk, (None, None))
+        n_prev = prev_N if prev_N is not None else ""
+        n_curr = n_new_map[tk]
+        data.append([tk, n_prev, n_curr, ts_now])
 
-        try:
-            ws_snap.batch_clear(["A2:D10000"])
-        except Exception:
-            pass
-        ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
-        _meta_write(ws_meta, hour_key, curr_hour)
-        print(f"🧊 SNAP 1H actualizado ({nombre_snap}) @ {ts_now} NY (cierre de hora).", flush=True)
+    try:
+        ws_snap.batch_clear(["A2:D10000"])
+    except Exception:
+        pass
+    ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
+    _meta_write(ws_meta, hour_key, curr_hour)
+    print(f"🧊 SNAP 1H actualizado ({nombre_snap}) @ {ts_now} NY (cierre de hora).", flush=True)
+
+    # 👉 ventana de 5 minutos para M SOLO al cierre de hora
+    flash_until = (now_ny + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    _meta_write(ws_meta, flash_key, flash_until)
+    print(f"⏱️ Señal M activa hasta {flash_until} NY para {sheet_title}", flush=True)
+
 
 
     # Persistir estado
