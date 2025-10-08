@@ -784,74 +784,99 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
                 return float(str(s).replace("%", "").replace(",", "."))
             except Exception:
                 return 0.0
+       for idx, row in enumerate(resumen):
+        tk = str(row[2]).strip().upper()
+        ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
 
-        for idx, row in enumerate(resumen):
-            tk = str(row[2]).strip().upper()
-            ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
-
-            # L
-            clasif_L = str(row[11])
-            if   clasif_L == "CALLS": bg_l = verde
-            elif clasif_L == "PUTS":  bg_l = rojo
-            else:                     bg_l = blanco
-            if ch_L: bg_l = amarillo
-          # Fondo base de M = blanco (una sola vez)
+        # L (fondo por CALLS/PUTS + amarillo si cambió)
+        clasif_L = str(row[11])
+        if   clasif_L == "CALLS": bg_l = verde
+        elif clasif_L == "PUTS":  bg_l = rojo
+        else:                     bg_l = blanco
+        if ch_L: bg_l = amarillo
         requests_fmt.append({
             "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                          "endRowIndex": start_row + total_rows,
-                          "startColumnIndex": 12, "endColumnIndex": 13},
-                "cell": {"userEnteredFormat": {"backgroundColor": blanco}},
+                "range": {"sheetId": sheet_id,
+                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                          "startColumnIndex": 11, "endColumnIndex": 12},
+                "cell": {"userEnteredFormat": {"backgroundColor": bg_l}},
                 "fields": "userEnteredFormat.backgroundColor"
             }
         })
 
-        # VERDE si hay "🔥🔥🔥" y P>0
-        requests_fmt.append({
-            "addConditionalFormatRule": {
-                "rule": {
-                    "ranges": [{
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 12,
-                        "endColumnIndex": 13
-                    }],
-                    "booleanRule": {
-                        "condition": {
-                            "type": "CUSTOM_FORMULA",
-                            "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3>0)"}]
-                        },
-                        "format": {"backgroundColor": verde}
-                    }
-                },
-                "index": 0
-            }
-        })
+        # H e I (verde/rojo por signo; amarillo si cambió)
+        val_h = fuerza_to_float_local(row[7])
+        val_i = fuerza_to_float_local(row[8])
+        bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
+        bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
+        if ch_oi:  bg_h = amarillo
+        if ch_vol: bg_i = amarillo
 
-        # ROJO si hay "🔥🔥🔥" y P<0
-        requests_fmt.append({
-            "addConditionalFormatRule": {
-                "rule": {
-                    "ranges": [{
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 12,
-                        "endColumnIndex": 13
-                    }],
-                    "booleanRule": {
-                        "condition": {
-                            "type": "CUSTOM_FORMULA",
-                            "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3<0)"}]
-                        },
-                        "format": {"backgroundColor": rojo}
-                    }
-                },
-                "index": 0
-            }
-        })
+        requests_fmt += [
+            {"repeatCell": {"range": {"sheetId": sheet_id,
+                                      "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                                      "startColumnIndex": 7, "endColumnIndex": 8},
+                            "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
+                            "fields": "userEnteredFormat.backgroundColor"}},
+            {"repeatCell": {"range": {"sheetId": sheet_id,
+                                      "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                                      "startColumnIndex": 8, "endColumnIndex": 9},
+                            "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
+                            "fields": "userEnteredFormat.backgroundColor"}},
+        ]
 
+    # (fuera del for, todavía dentro de if resumen:)
+    # Fondo base de M = blanco
+    requests_fmt.append({
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                      "endRowIndex": start_row + total_rows,
+                      "startColumnIndex": 12, "endColumnIndex": 13},
+            "cell": {"userEnteredFormat": {"backgroundColor": blanco}},
+            "fields": "userEnteredFormat.backgroundColor"
+        }
+    })
+    # VERDE si hay "🔥🔥🔥" y P>0
+    requests_fmt.append({
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": [{
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "endRowIndex": start_row + total_rows,
+                    "startColumnIndex": 12,
+                    "endColumnIndex": 13
+                }],
+                "booleanRule": {
+                    "condition": {"type": "CUSTOM_FORMULA",
+                                  "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3>0)"}]},
+                    "format": {"backgroundColor": verde}
+                }
+            },
+            "index": 0
+        }
+    })
+    # ROJO si hay "🔥🔥🔥" y P<0
+    requests_fmt.append({
+        "addConditionalFormatRule": {
+            "rule": {
+                "ranges": [{
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "endRowIndex": start_row + total_rows,
+                    "startColumnIndex": 12,
+                    "endColumnIndex": 13
+                }],
+                "booleanRule": {
+                    "condition": {"type": "CUSTOM_FORMULA",
+                                  "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3<0)"}]},
+                    "format": {"backgroundColor": rojo}
+               }
+            },
+            "index": 0
+        }
+    })
+         
 
         if requests_fmt:
             ws.spreadsheet.batch_update({"requests": requests_fmt})
