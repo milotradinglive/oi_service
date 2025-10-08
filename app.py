@@ -342,11 +342,11 @@ def _is_trading_day(dt_ny):
         return False
     return dt_ny.strftime("%Y-%m-%d") not in NYSE_HOLIDAYS_2025
 
-def _es_cierre_hora(dt_ny=None):
-    """True exactamente cuando cierra la vela 1H (minuto == 0, zona NY)."""
+def _es_cierre_hora(dt_ny=None, ventana_min=5):
+    """True durante los primeros `ventana_min` minutos de cada hora NY."""
     if dt_ny is None:
         dt_ny = _now_ny()
-    return dt_ny.minute == 0
+    return 0 <= dt_ny.minute < ventana_min
 
 def _is_rth_open(dt_ny):
     t = dt_ny.time()
@@ -514,17 +514,20 @@ def _parse_ny_naive(ts_str):
         return None
 
 # ========= Escritura en Google Sheets (incluye L, M, N, O, P, Q) =========
-def actualizar_hoja(doc, sheet_title, posicion_fecha):
+def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # --- Abrir hoja destino ---
     try:
         ws = doc.worksheet(sheet_title)
     except WorksheetNotFound:
         ws = doc.add_worksheet(title=sheet_title, rows=1200, cols=20)
 
-    # Hora NY
-    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+    # Hora NY (puede venir una base común desde run_once)
     ny_tz = pytz.timezone("America/New_York")
-    now_ny = now_utc.astimezone(ny_tz)
+    if now_ny_base is None:
+        now_ny = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(ny_tz)
+    else:
+        now_ny = now_ny_base.astimezone(ny_tz)
+    now_utc = now_ny.astimezone(pytz.utc)
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt = now_ny.strftime("%H:%M:%S")
 
@@ -1357,9 +1360,10 @@ def run_once(skip_oi: bool = False):
     except Exception as e:
         print(f"⚠️ snapshot_congelado() falló: {e}", flush=True)
 
-    if not skip_oi:
-        l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0)
-        l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1)
+   if not skip_oi:
+        now_ny_base = _now_ny()  # una sola vez
+        l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
+        l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
         try:
             print("SERVICIO_IO::L_SEMANA_ACTUAL=", json.dumps(l_vto1, ensure_ascii=False), flush=True)
             print("SERVICIO_IO::L_SEMANA_SIGUIENTE=", json.dumps(l_vto2, ensure_ascii=False), flush=True)
