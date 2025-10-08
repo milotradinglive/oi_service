@@ -1360,8 +1360,8 @@ def run_once(skip_oi: bool = False):
     except Exception as e:
         print(f"⚠️ snapshot_congelado() falló: {e}", flush=True)
 
-   if not skip_oi:
-        now_ny_base = _now_ny()  # una sola vez
+    if not skip_oi:
+        now_ny_base = _now_ny()  # una sola vez para ambas hojas
         l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
         l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
         try:
