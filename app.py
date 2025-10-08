@@ -486,7 +486,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
         ws.update(
             values=[[
                 "Fecha", "Hora", "Ticker",
-                "RELATIVE VERDE", "RELATIVE ROJO",
+                "Trade Cnt VERDE", "Trade Cnt ROJO",
                 "VOLUMEN ENTRA", "VOLUMEN SALE",
                 "TENDENCIA Trade Cnt.", "VOLUMEN.",
                 "Fuerza", "Relación", "Filtro institucional", "🔥"
@@ -663,7 +663,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha):
 
     encabezado = [[
         "Fecha", "Hora", "Ticker",
-        "RELATIVE VERDE", "RELATIVE ROJO",
+        "Trade Cnt VERDE", "Trade Cnt ROJO",
         "VOLUMEN ENTRA", "VOLUMEN SALE",
         "TENDENCIA Trade Cnt.", "VOLUMEN.",
         "Fuerza", "Relación", "Filtro institucional", "🔥"
