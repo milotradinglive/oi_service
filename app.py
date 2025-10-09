@@ -448,10 +448,6 @@ def snapshot_congelado(doc_main):
         print("ℹ️  Snapshot ya hecho hoy. No se repite.", flush=True)
         return False
 
-    last_session = _meta_read(ws_meta, "last_snapshot_session", "")
-    print(f"[congelado] trading={_is_trading_day(now_ny)} rth={_is_rth_open(now_ny)} "
-          f"hoy={hoy} last_session={last_session}", flush=True)
-
     used_rows, used_cols = _get_used_size(ws_src)
     if used_rows == 0 or used_cols == 0:
         print("ℹ️  Origen vacío. Nada para congelar.", flush=True)
@@ -713,9 +709,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             fmt_millones(r["m_put"]),                       # E
             fmt_entero_miles(r["v_call"]),                  # F
             fmt_entero_miles(r["v_put"]),                   # G
-            pct_str(r["diff_m"]),                           # H
-            pct_str(r["diff_v"]),                           # I
-            pct_str(r["diff_m"]),                           # J (Fuerza)
+            r["val_h"],                                     # H (decimal)
+            r["val_i"],                                     # I (decimal)
+            r["val_h"],                                     # J (decimal, copia de H)
             r["rel"],                                       # K
             r["L"],                                         # L
             r["M"],                                         # M (texto)
