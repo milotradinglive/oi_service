@@ -456,7 +456,7 @@ def snapshot_congelado(doc_main):
 
     _meta_write(ws_meta, "last_snapshot_session", hoy)
     try:
-        ws_dest.update([[f"Snapshot RTH: {hoy} (congelado hasta próxima sesión)"]], "N1")
+        ws_dest.update([[f"Snapshot: {hoy} (congelado hasta próxima actualización)"]], "N1")
     except Exception:
         pass
 
@@ -903,7 +903,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         f"last={last_hour} curr={curr_hour}",
         flush=True
     )
-    if _es_cierre_hora(now_ny) and last_hour != curr_hour:
+    if last_hour != curr_hour:
         # N_new = m_call - m_put (1 decimal) por ticker
         n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
