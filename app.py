@@ -431,12 +431,6 @@ def snapshot_congelado(doc_main):
     now_ny = _now_ny()
     hoy = now_ny.strftime("%Y-%m-%d")
 
-    if not _is_trading_day(now_ny) or not _is_rth_open(now_ny):
-        if _last_closed_log != hoy:
-            print("⏸️  Mercado cerrado o día no hábil → 'dia anterior' sigue congelado.", flush=True)
-            _last_closed_log = hoy
-        return False
-
     ws_src  = _ensure_sheet_generic(doc_main, HOJA_ORIGEN)
     ws_dest = _ensure_sheet_generic(doc_main, HOJA_DEST)
     ws_meta = _ensure_sheet_generic(doc_main, HOJA_META, rows=50, cols=2)
@@ -909,7 +903,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         f"last={last_hour} curr={curr_hour}",
         flush=True
     )
-    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
+    if _es_cierre_hora(now_ny) and last_hour != curr_hour:
         # N_new = m_call - m_put (1 decimal) por ticker
         n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
