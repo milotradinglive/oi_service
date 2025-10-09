@@ -531,16 +531,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     fecha_txt = f"{now_ny:%Y-%m-%d}"
     hora_txt = now_ny.strftime("%H:%M:%S")
 
-    # ⚡ Ventana de "flash" M (5 minutos post-cierre de hora)
-    ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
-    flash_key = f"m_flash_until__{sheet_title}"
-    flash_until_str = _meta_read(ws_meta, flash_key, "")
-    flash_until_dt = _parse_ny_naive(flash_until_str)
-    within_flash = (flash_until_dt is not None) and (now_ny <= flash_until_dt)
-
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
-
 
     # Estado previo (colores/prevH/prevI)
     nombre_estado = f"ESTADO__{sheet_title}"
@@ -602,7 +594,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         "Fuerza",                                  # J (copia H)
         "Relación",                                # K (bolitas)
         "Filtro institucional",                    # L (CALLS/PUTS/"")
-        "🔥",                                       # M (3 fuegos si |Q|>=0.5)
+        "",                                        # M (vacia)
         "D−E (N)",                                 # N (SNAP N_curr)
         "N previo (O)",                            # O (SNAP N_prev)
         "Δ (P=N−O)",                               # P
@@ -672,8 +664,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             P_delta = N_curr - O_prev
             Q_rel = (P_delta / O_prev) if O_prev not in (0, None) else 0.0
 
-        M_text = "🔥🔥🔥" if within_flash and (abs(Q_rel) >= 0.5) else ""
-
+   
         filas.append({
             "tk": tk,
             "exp": (agg[tk]["EXP"] or a1_value or fecha_txt),
@@ -713,7 +704,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             r["val_h"],                                     # J (decimal, copia de H)
             r["rel"],                                       # K
             r["L"],                                         # L
-            r["M"],                                         # M (texto)
+            r[""],                                          # M (vacio)
             "" if r["N"] is None else r["N"],               # N (num)
             "" if r["O"] is None else r["O"],               # O (num)
             r["P"],                                         # P (num)
@@ -764,7 +755,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             {  # limpiar fondos H..M
                 "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
                                          "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 7, "endColumnIndex": 13},
+                                         "startColumnIndex": 7, "endColumnIndex": 12
                                "cell": {"userEnteredFormat": {"backgroundColor": {"red":1,"green":1,"blue":1}}},
                                "fields": "userEnteredFormat.backgroundColor"}
             },
@@ -922,11 +913,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         ws_snap.update(values=data, range_name=f"A1:D{len(data)}")
         _meta_write(ws_meta, hour_key, curr_hour)
         print(f"🧊 SNAP 1H actualizado ({nombre_snap}) @ {ts_now} NY (cierre de hora).", flush=True)
-
-        # 👉 ventana de 5 minutos para M SOLO al cierre de hora
-        flash_until = (now_ny + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        _meta_write(ws_meta, flash_key, flash_until)
-        print(f"⏱️ Señal M activa hasta {flash_until} NY para {sheet_title}", flush=True)
 
     # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
