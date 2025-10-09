@@ -704,7 +704,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             r["val_h"],                               # J (copia de H)
             r["rel"],                                 # K
             r["L"],                                   # L
-            "",                                       # M (vacía)
+            "",                                       # M: vacía (sin lógica ni formato)
             "" if r["N"] is None else r["N"],         # N
             "" if r["O"] is None else r["O"],         # O
             r["P"],                                   # P
@@ -715,162 +715,124 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     if resumen:
         ws.update(values=resumen, range_name=f"A3:Q{len(resumen)+2}", value_input_option="USER_ENTERED")
 
-    # === Formato: % en H/I/J/Q; color H/I/L; fondo dinámico M según (P,Q) ===
-    if resumen:
-        sheet_id = ws.id
-        start_row = 2   # 0-based para fila 3
-        total_rows = len(resumen)
-        requests_fmt = []
+   # === Formato: % en H/I/J/Q; color H/I/L (sin formato en M) ===
+if resumen:
+    sheet_id = ws.id
+    start_row = 2   # 0-based para fila 3
+    total_rows = len(resumen)
+    requests_fmt = []
 
-        # % en H, I, J, Q
-        requests_fmt += [
-            {  # H
-                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                                         "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 7, "endColumnIndex": 8},
-                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                               "fields": "userEnteredFormat.numberFormat"}
-            },
-            {  # I
-                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                                         "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 8, "endColumnIndex": 9},
-                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                               "fields": "userEnteredFormat.numberFormat"}
-            },
-            {  # J
-                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                                         "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 9, "endColumnIndex": 10},
-                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                               "fields": "userEnteredFormat.numberFormat"}
-            },
-            {  # Q
-                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                                         "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 16, "endColumnIndex": 17},
-                               "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
-                               "fields": "userEnteredFormat.numberFormat"}
-            },
-            {  # limpiar fondos H..L
-                "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": 7,   # H
-                        "endColumnIndex": 12     # L (exclusivo)
-                    },
-                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
-                    "fields": "userEnteredFormat.backgroundColor"
-                }
-            },
-    
-        verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
-        rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
-        amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
-        blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
-
-        def fuerza_to_float_local(s):
-            try:
-                return float(str(s).replace("%", "").replace(",", "."))
-            except Exception:
-                return 0.0
-
-        # === Por-fila: coloreo de L, H e I ===
-        for idx, row in enumerate(resumen):
-            tk = str(row[2]).strip().upper()
-            ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
-
-            # L
-            clasif_L = str(row[11])
-            if clasif_L == "CALLS":
-                bg_l = verde
-            elif clasif_L == "PUTS":
-                bg_l = rojo
-            else:
-                bg_l = blanco
-            if ch_L:
-                bg_l = amarillo
-
-            requests_fmt.append({
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id,
-                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                              "startColumnIndex": 11, "endColumnIndex": 12},
-                    "cell": {"userEnteredFormat": {"backgroundColor": bg_l}},
-                    "fields": "userEnteredFormat.backgroundColor"
-                }
-            })
-
-            # H / I por signo (+ amarillo si hubo cambio)
-            val_h = fuerza_to_float_local(row[7])
-            val_i = fuerza_to_float_local(row[8])
-            bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
-            bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
-            if ch_oi:
-                bg_h = amarillo
-            if ch_vol:
-                bg_i = amarillo
-
-            requests_fmt += [
-                {"repeatCell": {"range": {"sheetId": sheet_id,
-                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                          "startColumnIndex": 7, "endColumnIndex": 8},
-                                "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
-                                "fields": "userEnteredFormat.backgroundColor"}},
-                {"repeatCell": {"range": {"sheetId": sheet_id,
-                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                          "startColumnIndex": 8, "endColumnIndex": 9},
-                                "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
-                                "fields": "userEnteredFormat.backgroundColor"}}
-            ]
-
-  
-        # Condicionales de M: verde si "🔥🔥🔥" y P>0 ; rojo si "🔥🔥🔥" y P<0
-        requests_fmt += [
-            {
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [{
-                            "sheetId": sheet_id,
-                            "startRowIndex": start_row,
-                            "endRowIndex": start_row + total_rows,
-                            "startColumnIndex": 12,
-                            "endColumnIndex": 13
-                        }],
-                        "booleanRule": {
-                            "condition": {"type": "CUSTOM_FORMULA",
-                                          "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3>0)"}]},
-                            "format": {"backgroundColor": verde}
-                        }
-                    },
-                    "index": 0
-                }
-            },
-            {
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [{
-                            "sheetId": sheet_id,
-                            "startRowIndex": start_row,
-                            "endRowIndex": start_row + total_rows,
-                            "startColumnIndex": 12,
-                            "endColumnIndex": 13
-                        }],
-                        "booleanRule": {
-                            "condition": {"type": "CUSTOM_FORMULA",
-                                          "values": [{"userEnteredValue": "=Y($M3=\"🔥🔥🔥\";$P3<0)"}]},
-                            "format": {"backgroundColor": rojo}
-                        }
-                    },
-                    "index": 0
-                }
+    # % en H, I, J, Q + limpiar fondos H..L
+    requests_fmt += [
+        {  # H
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                          "endRowIndex": start_row + total_rows,
+                          "startColumnIndex": 7, "endColumnIndex": 8},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                "fields": "userEnteredFormat.numberFormat"
             }
+        },
+        {  # I
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                          "endRowIndex": start_row + total_rows,
+                          "startColumnIndex": 8, "endColumnIndex": 9},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                "fields": "userEnteredFormat.numberFormat"
+            }
+        },
+        {  # J
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                          "endRowIndex": start_row + total_rows,
+                          "startColumnIndex": 9, "endColumnIndex": 10},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                "fields": "userEnteredFormat.numberFormat"
+            }
+        },
+        {  # Q
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                          "endRowIndex": start_row + total_rows,
+                          "startColumnIndex": 16, "endColumnIndex": 17},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                "fields": "userEnteredFormat.numberFormat"
+            }
+        },
+        {  # limpiar fondos H..L (M no se toca)
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
+                          "endRowIndex": start_row + total_rows,
+                          "startColumnIndex": 7, "endColumnIndex": 12},
+                "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        }
+    ]
+
+    verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
+    rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
+    amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
+    blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
+
+    def fuerza_to_float_local(s):
+        try:
+            return float(str(s).replace("%", "").replace(",", "."))
+        except Exception:
+            return 0.0
+
+    # Por fila: coloreo de L, H e I (M queda sin formato ni contenido)
+    for idx, row in enumerate(resumen):
+        tk = str(row[2]).strip().upper()
+        ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
+
+        # L
+        clasif_L = str(row[11])
+        if clasif_L == "CALLS":
+            bg_l = verde
+        elif clasif_L == "PUTS":
+            bg_l = rojo
+        else:
+            bg_l = blanco
+        if ch_L:
+            bg_l = amarillo
+
+        requests_fmt.append({
+            "repeatCell": {
+                "range": {"sheetId": sheet_id,
+                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                          "startColumnIndex": 11, "endColumnIndex": 12},
+                "cell": {"userEnteredFormat": {"backgroundColor": bg_l}},
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        })
+
+        # H / I por signo (+ amarillo si hubo cambio)
+        val_h = fuerza_to_float_local(row[7])
+        val_i = fuerza_to_float_local(row[8])
+        bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
+        bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
+        if ch_oi:
+            bg_h = amarillo
+        if ch_vol:
+            bg_i = amarillo
+
+        requests_fmt += [
+            {"repeatCell": {"range": {"sheetId": sheet_id,
+                                      "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                                      "startColumnIndex": 7, "endColumnIndex": 8},
+                            "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
+                            "fields": "userEnteredFormat.backgroundColor"}},
+            {"repeatCell": {"range": {"sheetId": sheet_id,
+                                      "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                                      "startColumnIndex": 8, "endColumnIndex": 9},
+                            "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
+                            "fields": "userEnteredFormat.backgroundColor"}}
         ]
 
-        if requests_fmt:
-            ws.spreadsheet.batch_update({"requests": requests_fmt})
+    if requests_fmt:
+        ws.spreadsheet.batch_update({"requests": requests_fmt})
 
     # === SNAP: actualizar SOLO en cierre de HORA NY ===
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
