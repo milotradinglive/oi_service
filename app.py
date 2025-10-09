@@ -342,8 +342,7 @@ def _is_trading_day(dt_ny):
         return False
     return dt_ny.strftime("%Y-%m-%d") not in NYSE_HOLIDAYS_2025
 
-def _es_cierre_hora(dt_ny=None, ventana_min=5):
-    """True durante los primeros `ventana_min` minutos de cada hora NY."""
+def _es_cierre_hora(dt_ny=None, ventana_min=10):  # antes 5
     if dt_ny is None:
         dt_ny = _now_ny()
     return 0 <= dt_ny.minute < ventana_min
