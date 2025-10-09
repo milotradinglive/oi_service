@@ -900,7 +900,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     last_hour = _meta_read(ws_meta, hour_key, "")
 
     # 👇 LOG de diagnóstico (punto 3)
-    pprint(f"[snap-1h] {sheet_title} NY={now_ny:%Y-%m-%d %H:%M} win={_es_cierre_hora(now_ny)} last={last_hour} curr={curr_hour}", flush=True)
+    print(f"[snap-1h] {sheet_title} NY={now_ny:%Y-%m-%d %H:%M} win={_es_cierre_hora(now_ny)} last={last_hour} curr={curr_hour}", flush=True)
 
     if _es_cierre_hora(now_ny) and last_hour != curr_hour:
         # N_new = m_call - m_put (1 decimal) por ticker
