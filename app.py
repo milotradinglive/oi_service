@@ -445,6 +445,9 @@ def snapshot_congelado(doc_main):
     if last_session == hoy:
         print("ℹ️  Snapshot ya hecho hoy. No se repite.", flush=True)
         return False
+    last_session = _meta_read(ws_meta, "last_snapshot_session", "")
+    print(f"[congelado] trading={_is_trading_day(now_ny)} rth={_is_rth_open(now_ny)} "
+          f"hoy={hoy} last_session={last_session}", flush=True)
 
     used_rows, used_cols = _get_used_size(ws_src)
     if used_rows == 0 or used_cols == 0:
@@ -898,7 +901,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     curr_hour = now_ny.strftime("%Y-%m-%d %H")
     last_hour = _meta_read(ws_meta, hour_key, "")
 
-    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
+    # 👇 LOG de diagnóstico (punto 3)
+    print(
+        f"[snap-1h] NY={now_ny:%H:%M} "
+        f"trading={_is_trading_day(now_ny)} "
+        f"rth={_is_rth_open(now_ny)} "
+        f"win={_es_cierre_hora(now_ny)} "
+        f"last={last_hour} curr={curr_hour}",
+        flush=True
+    )
+    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and last_hour != curr_hour:
         # N_new = m_call - m_put (1 decimal) por ticker
         n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
