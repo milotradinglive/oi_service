@@ -692,24 +692,24 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # Preparar matriz de escritura A..Q
     resumen = []
-    for r in filas:
+        for r in filas:
         resumen.append([
-            r["exp"], r["hora"], r["tk"],                   # A-C
-            fmt_millones(r["m_call"]),                      # D
-            fmt_millones(r["m_put"]),                       # E
-            fmt_entero_miles(r["v_call"]),                  # F
-            fmt_entero_miles(r["v_put"]),                   # G
-            r["val_h"],                                     # H (decimal)
-            r["val_i"],                                     # I (decimal)
-            r["val_h"],                                     # J (decimal, copia de H)
-            r["rel"],                                       # K
-            r["L"],                                         # L
-            "",                                             # M (vacío)
-            "" if r["N"] ...
-            "" if r["O"] is None else r["O"],               # O (num)
-            r["P"],                                         # P (num)
-            r["Q"],                                         # Q (num)
-        ])
+        r["exp"], r["hora"], r["tk"],
+        fmt_millones(r["m_call"]),
+        fmt_millones(r["m_put"]),
+        fmt_entero_miles(r["v_call"]),
+        fmt_entero_miles(r["v_put"]),
+        r["val_h"],            # H
+        r["val_i"],            # I
+        r["val_h"],            # J (copia de H)
+        r["rel"],              # K
+        r["L"],                # L
+        "",                    # M (vacío)
+        "" if r["N"] is None else r["N"],  # N
+        "" if r["O"] is None else r["O"],  # O
+        r["P"],                              
+        r["Q"],
+    ])
         cambios_por_ticker[r["tk"]] = (r["cambio_oi"], r["cambio_vol"], r["cambio_L"])
 
     if resumen:
@@ -752,12 +752,18 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                                "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                                "fields": "userEnteredFormat.numberFormat"}
             },
-            {  # limpiar fondos H..M
-                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                                         "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 7, "endColumnIndex": 12
-                               "cell": {"userEnteredFormat": {"backgroundColor": {"red":1,"green":1,"blue":1}}},
-                               "fields": "userEnteredFormat.backgroundColor"}
+            {  # limpiar fondos H..L
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": 7,   # H
+                        "endColumnIndex": 12     # L (exclusivo)
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
             },
             {  # centrar M
                 "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
