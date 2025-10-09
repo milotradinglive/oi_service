@@ -673,7 +673,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             "v_call": v_call, "v_put": v_put,
             "diff_m": diff_m, "diff_v": diff_v,
             "val_h": val_h, "val_i": val_i,
-            "rel": relacion, "L": clasif_L, "M": M_text,
+            "rel": relacion, "L": clasif_L,
             "N": N_curr, "O": O_prev, "P": P_delta, "Q": Q_rel,
             "cambio_oi": cambio_oi, "cambio_vol": cambio_vol, "cambio_L": cambio_L,
         })
@@ -704,8 +704,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             r["val_h"],                                     # J (decimal, copia de H)
             r["rel"],                                       # K
             r["L"],                                         # L
-            r[""],                                          # M (vacio)
-            "" if r["N"] is None else r["N"],               # N (num)
+            "",                                             # M (vacío)
+            "" if r["N"] ...
             "" if r["O"] is None else r["O"],               # O (num)
             r["P"],                                         # P (num)
             r["Q"],                                         # Q (num)
