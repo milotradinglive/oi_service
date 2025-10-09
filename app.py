@@ -692,26 +692,26 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # Preparar matriz de escritura A..Q
     resumen = []
-        for r in filas:
+    for r in filas:
         resumen.append([
-        r["exp"], r["hora"], r["tk"],
-        fmt_millones(r["m_call"]),
-        fmt_millones(r["m_put"]),
-        fmt_entero_miles(r["v_call"]),
-        fmt_entero_miles(r["v_put"]),
-        r["val_h"],            # H
-        r["val_i"],            # I
-        r["val_h"],            # J (copia de H)
-        r["rel"],              # K
-        r["L"],                # L
-        "",                    # M (vacío)
-        "" if r["N"] is None else r["N"],  # N
-        "" if r["O"] is None else r["O"],  # O
-        r["P"],                              
-        r["Q"],
-    ])
+            r["exp"], r["hora"], r["tk"],            # A-C
+            fmt_millones(r["m_call"]),               # D
+            fmt_millones(r["m_put"]),                # E
+            fmt_entero_miles(r["v_call"]),           # F
+            fmt_entero_miles(r["v_put"]),            # G
+            r["val_h"],                               # H
+            r["val_i"],                               # I
+            r["val_h"],                               # J (copia de H)
+            r["rel"],                                 # K
+            r["L"],                                   # L
+            "",                                       # M (vacía)
+            "" if r["N"] is None else r["N"],         # N
+            "" if r["O"] is None else r["O"],         # O
+            r["P"],                                   # P
+            r["Q"],                                   # Q
+        ])
         cambios_por_ticker[r["tk"]] = (r["cambio_oi"], r["cambio_vol"], r["cambio_L"])
-
+  
     if resumen:
         ws.update(values=resumen, range_name=f"A3:Q{len(resumen)+2}", value_input_option="USER_ENTERED")
 
@@ -765,15 +765,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                     "fields": "userEnteredFormat.backgroundColor"
                 }
             },
-            {  # centrar M
-                "repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                                         "endRowIndex": start_row + total_rows,
-                                         "startColumnIndex": 12, "endColumnIndex": 13},
-                               "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
-                               "fields": "userEnteredFormat.horizontalAlignment"}
-            },
-        ]
-
+    
         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
@@ -834,17 +826,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                                 "fields": "userEnteredFormat.backgroundColor"}}
             ]
 
-        # Base de M = blanco (rango completo)
-        requests_fmt.append({
-            "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": start_row,
-                          "endRowIndex": start_row + total_rows,
-                          "startColumnIndex": 12, "endColumnIndex": 13},
-                "cell": {"userEnteredFormat": {"backgroundColor": blanco}},
-                "fields": "userEnteredFormat.backgroundColor"
-            }
-        })
-
+  
         # Condicionales de M: verde si "🔥🔥🔥" y P>0 ; rojo si "🔥🔥🔥" y P<0
         requests_fmt += [
             {
