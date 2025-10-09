@@ -442,9 +442,12 @@ def snapshot_congelado(doc_main):
     ws_meta = _ensure_sheet_generic(doc_main, HOJA_META, rows=50, cols=2)
 
     last_session = _meta_read(ws_meta, "last_snapshot_session", "")
+    print(f"[congelado] trading={_is_trading_day(now_ny)} rth={_is_rth_open(now_ny)} "
+          f"hoy={hoy} last_session={last_session}", flush=True)
     if last_session == hoy:
         print("ℹ️  Snapshot ya hecho hoy. No se repite.", flush=True)
         return False
+
     last_session = _meta_read(ws_meta, "last_snapshot_session", "")
     print(f"[congelado] trading={_is_trading_day(now_ny)} rth={_is_rth_open(now_ny)} "
           f"hoy={hoy} last_session={last_session}", flush=True)
@@ -910,7 +913,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         f"last={last_hour} curr={curr_hour}",
         flush=True
     )
-    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and last_hour != curr_hour:
+    if _is_trading_day(now_ny) and _is_rth_open(now_ny) and _es_cierre_hora(now_ny) and last_hour != curr_hour:
         # N_new = m_call - m_put (1 decimal) por ticker
         n_new_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
