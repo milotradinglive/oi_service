@@ -603,11 +603,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         "Fuerza",                                  # J (copia H)
         "Filtro institucional",                    # K  (CALLS/PUTS/"")
         # ---- 15m ----
-        "D−E (N 15m)", "N previo (15m)", "Δ (15m)", "Δ% (15m)",      # L,M,N,O
+        "D−E (N 15m)", "N previo (15m)", "15", "15 %",      # L,M,N,O
         # ---- 1h ----
-        "N 1h", "N previo 1h", "Δ 1h", "Δ% 1h",                      # P,Q,R,S
+        "N 1h", "N previo 1h", "hora", "hora",                      # P,Q,R,S
         # ---- diario ----
-        "N día", "N previo día", "Δ día", "Δ% día"                   # T,U,V,W
+        "N día", "N previo día", "día", "día %"                   # T,U,V,W
     ]]
     ws.update(values=encabezado, range_name="A2:W2")
     try:
