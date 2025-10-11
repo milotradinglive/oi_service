@@ -605,7 +605,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         # ---- 15m ----
         "D−E (N 15m)", "N previo (15m)", "15", "15 %",      # L,M,N,O
         # ---- 1h ----
-        "N 1h", "N previo 1h", "hora", "hora",                      # P,Q,R,S
+        "N 1h", "N previo 1h", "hora", "hora %",                      # P,Q,R,S
         # ---- diario ----
         "N día", "N previo día", "día", "día %"                   # T,U,V,W
     ]]
