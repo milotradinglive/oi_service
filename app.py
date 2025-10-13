@@ -745,7 +745,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row,
                               "endRowIndex": start_row + total_rows,
                               "startColumnIndex": col, "endColumnIndex": col+1},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             })
@@ -756,7 +756,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row,
                               "endRowIndex": start_row + total_rows,
                               "startColumnIndex": col, "endColumnIndex": col+1},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             })
