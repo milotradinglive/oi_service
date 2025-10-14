@@ -778,12 +778,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _retry(lambda: ws_snap1h.batch_clear(["A2:D10000"]))
         _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
 
-    # 1d — 15:53 NY
     if _es_corte_1553(ny):
         data_d = [["Ticker","N_prev","N_curr","ts"]]
         for tk in sorted(n_map.keys()):
-            n_prev = cache_d.get(tk, "")
             n_curr = n_map[tk]
+            n_prev = cache_d.get(tk, n_curr)  # <-- clave: usa n_curr si no hay previo
             data_d.append([tk, n_prev, n_curr, ts])
             cache_d[tk] = n_curr
         _retry(lambda: ws_snapD.batch_clear(["A2:D10000"]))
