@@ -619,94 +619,94 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     filas_sorted = sorted(agg.keys())
     # 1) Prepara métricas por ticker (J = val_h)
-stats = {}
-for tk in agg.keys():
-    m_call, v_call = agg[tk]["CALL"]
-    m_put,  v_put  = agg[tk]["PUT"]
-    val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
-    val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
-    clasif = _clasificar_filtro_institucional(val_h_num, val_i_num)
+    stats = {}
+    for tk in agg.keys():
+        m_call, v_call = agg[tk]["CALL"]
+        m_put,  v_put  = agg[tk]["PUT"]
+        val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
+        val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
+        clasif = _clasificar_filtro_institucional(val_h_num, val_i_num)
 
-    prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
-    color_oi  = "🟢" if val_h_num > 0 else "🔴" if val_h_num < 0 else "⚪"
-    color_vol = "🟢" if val_i_num > 0 else "🔴" if val_i_num < 0 else "⚪"
-    cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
-    cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
-    es_alineado = clasif in ("CALLS","PUTS")
-    cambio_L = es_alineado and (clasif != prev_l)
+        prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
+        color_oi  = "🟢" if val_h_num > 0 else "🔴" if val_h_num < 0 else "⚪"
+        color_vol = "🟢" if val_i_num > 0 else "🔴" if val_i_num < 0 else "⚪"
+        cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
+        cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
+        es_alineado = clasif in ("CALLS","PUTS")
+        cambio_L = es_alineado and (clasif != prev_l)
 
-    cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
-    estado_nuevo[tk] = (color_oi, color_vol, clasif, val_h_num, val_i_num)
+        cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
+        estado_nuevo[tk] = (color_oi, color_vol, clasif, val_h_num, val_i_num)
 
-    stats[tk] = {
-        "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
-        "val_h": val_h_num, "val_i": val_i_num, "clasif": clasif,
-    }
+        stats[tk] = {
+            "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
+            "val_h": val_h_num, "val_i": val_i_num, "clasif": clasif,
+        }
 
-# 2) Ordenar por columna J (== val_h) de mayor a menor
-filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
+    # 2) Ordenar por columna J (== val_h) de mayor a menor
+    filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
-# 3) Construir encabezado y tabla ya ordenada
-from gspread.utils import rowcol_to_a1
-encabezado = [[
-    "Fecha","Hora","Ticker",
-    "Trade Cnt VERDE","Trade Cnt ROJO",
-    "VOLUMEN ENTRA","VOLUMEN SALE",
-    "TENDENCIA Trade Cnt.","VOLUMEN.",
-    "Fuerza","Filtro institucional",
-    "N (5m SNAP)","O (5m SNAP)","5m","5m %",
-    "N (15m SNAP)","O (15m SNAP)","15m","15m %",
-    "N (1h SNAP)","O (1h SNAP)","1h","1h %",
-    "N (1d SNAP)","O (1d SNAP)","1d","1d %"
-]]
-end_a1 = rowcol_to_a1(2, len(encabezado[0]))
-_update_values(ws, f"A2:{end_a1}", encabezado)
+    # 3) Construir encabezado y tabla ya ordenada
+    from gspread.utils import rowcol_to_a1
+    encabezado = [[
+        "Fecha","Hora","Ticker",
+        "Trade Cnt VERDE","Trade Cnt ROJO",
+        "VOLUMEN ENTRA","VOLUMEN SALE",
+        "TENDENCIA Trade Cnt.","VOLUMEN.",
+        "Fuerza","Filtro institucional",
+        "N (5m SNAP)","O (5m SNAP)","5m","5m %",
+        "N (15m SNAP)","O (15m SNAP)","15m","15m %",
+        "N (1h SNAP)","O (1h SNAP)","1h","1h %",
+        "N (1d SNAP)","O (1d SNAP)","1d","1d %"
+    ]]
+    end_a1 = rowcol_to_a1(2, len(encabezado[0]))
+    _update_values(ws, f"A2:{end_a1}", encabezado)
 
-tabla = []
-s5  = f"SNAP_5min__{sheet_title}"
-s15 = f"SNAP__{sheet_title}"
-s1h = f"SNAP_H1__{sheet_title}"
-sd  = f"SNAP_dia__{sheet_title}"
+    tabla = []
+    s5  = f"SNAP_5min__{sheet_title}"
+    s15 = f"SNAP__{sheet_title}"
+    s1h = f"SNAP_H1__{sheet_title}"
+    sd  = f"SNAP_dia__{sheet_title}"
 
-for i, tk in enumerate(filas_sorted, start=3):
-    m_call = stats[tk]["m_call"]; m_put = stats[tk]["m_put"]
-    v_call = stats[tk]["v_call"]; v_put = stats[tk]["v_put"]
+    for i, tk in enumerate(filas_sorted, start=3):
+        m_call = stats[tk]["m_call"]; m_put = stats[tk]["m_put"]
+        v_call = stats[tk]["v_call"]; v_put = stats[tk]["v_put"]
 
-    H = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
-    I = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
-    J = f"=H{i}"
-    K = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
+        H = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
+        I = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
+        J = f"=H{i}"
+        K = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
 
-    L = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
-    M = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
-    N = f"=SI.ERROR(L{i}-M{i};0)"
-    O = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
+        L = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
+        M = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
+        N = f"=SI.ERROR(L{i}-M{i};0)"
+        O = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
 
-    P = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
-    Q = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
-    R = f"=SI.ERROR(P{i}-Q{i};0)"
-    S = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
+        P = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
+        Q = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
+        R = f"=SI.ERROR(P{i}-Q{i};0)"
+        S = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
 
-    T = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
-    U = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO);)"
-    V = f"=SI.ERROR(T{i}-U{i};0)"
-    W = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
+        T = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
+        U = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO);)"
+        V = f"=SI.ERROR(T{i}-U{i};0)"
+        W = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
 
-    X  = f"=SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$C;3;FALSO);)"
-    Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$B;2;FALSO);)"
-    Z  = f"=SI.ERROR(X{i}-Y{i};0)"
-    AA = f"=SI( O(ESBLANCO(Y{i}); ABS(Y{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(Y{i});0) )"
+        X  = f"=SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$C;3;FALSO);)"
+        Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$B;2;FALSO);)"
+        Z  = f"=SI.ERROR(X{i}-Y{i};0)"
+        AA = f"=SI( O(ESBLANCO(Y{i}); ABS(Y{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(Y{i});0) )"
 
-    tabla.append([
-        agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
-        fmt_millones(m_call), fmt_millones(m_put),
-        fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-        H, I, J, K,
-        L, M, N, O,
-        P, Q, R, S,
-        T, U, V, W,
-        X, Y, Z, AA
-    ])
+        tabla.append([
+            agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
+            fmt_millones(m_call), fmt_millones(m_put),
+            fmt_entero_miles(v_call), fmt_entero_miles(v_put),
+            H, I, J, K,
+            L, M, N, O,
+            P, Q, R, S,
+            T, U, V, W,
+            X, Y, Z, AA
+        ])
 
     if tabla:
         _retry(lambda: ws.batch_clear(["A3:AA2000"]))
