@@ -518,15 +518,15 @@ def _parse_ny_naive(ts_str):
     except Exception:
         return None
 
-# ========= Escritura en Google Sheets (K..W portado) =========
+# ========= Escritura en Google Sheets (K..AA con fórmulas en L..AA) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # --- Abrir hoja destino ---
     try:
         ws = doc.worksheet(sheet_title)
     except WorksheetNotFound:
-        ws = doc.add_worksheet(title=sheet_title, rows=1200, cols=23)  # hasta W
+        ws = doc.add_worksheet(title=sheet_title, rows=2000, cols=27)  # hasta AA
 
-    # Hora NY (puede venir una base común desde run_once)
+    # Hora NY (base común)
     ny_tz = pytz.timezone("America/New_York")
     if now_ny_base is None:
         now_ny = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(ny_tz)
@@ -546,14 +546,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     estado_nuevo = {}
     cambios_por_ticker = {}
 
-    # SNAP de 15m / hora / día
-    ws_snap15 = _ensure_snapshot_sheet(doc, f"SNAP__{sheet_title}")
-    ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H__{sheet_title}")
-    ws_snapD  = _ensure_snapshot_sheet(doc, f"SNAP_dia__{sheet_title}")
-
-    snap15 = _leer_snap_both_map(ws_snap15)  # (N_prev,N_curr)
-    snap1h = _leer_snap_both_map(ws_snap1h)
-    snapD  = _leer_snap_both_map(ws_snapD)
+    # SNAPs
+    ws_snap5m = _ensure_snapshot_sheet(doc, f"SNAP_5min__{sheet_title}")  # 5m
+    ws_snap15 = _ensure_snapshot_sheet(doc, f"SNAP__{sheet_title}")       # 15m
+    ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H__{sheet_title}")     # 1h
+    ws_snapD  = _ensure_snapshot_sheet(doc, f"SNAP_dia__{sheet_title}")   # 1d
 
     # Recolecta datos OI por ticker
     datos = []
@@ -563,7 +560,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # A1: fecha visible
+    # A1: fecha/exp visible
     exp_dates = []
     for _, _, _, _, exp_vto, _ in datos:
         if exp_vto:
@@ -571,7 +568,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 exp_dates.append(_dt.strptime(exp_vto, "%Y-%m-%d").date())
             except Exception:
                 pass
-    ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
 
     def _calc_friday_from_today(pos_index: int) -> str:
         base = now_ny.date()
@@ -582,6 +578,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         target = first_friday + _td(days=7 * pos_index)
         return target.strftime("%Y-%m-%d")
 
+    ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
     title_norm = ws.title.strip().lower()
     if title_norm in ("semana actual", "semana siguiente"):
         a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
@@ -594,26 +591,27 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
 
-    # Encabezado A..W
+    # Encabezado A..AA (fila 2)
     encabezado = [[
-        "Fecha", "Hora", "Ticker",                 # A-C
-        "Trade Cnt VERDE", "Trade Cnt ROJO",       # D-E (dinero CALL / PUT en MM)
-        "VOLUMEN ENTRA", "VOLUMEN SALE",           # F-G (volumen CALL/PUT)
-        "TENDENCIA Trade Cnt.", "VOLUMEN.",        # H-I (% normalizado de dinero/volumen)
-        "Fuerza",                                  # J (copia H)
-        "Filtro institucional",                    # K  (CALLS/PUTS/"")
-        # ---- 15m ----
-        "D−E (N 15m)", "N previo (15m)", "15", "15 %",      # L,M,N,O
-        # ---- 1h ----
-        "N 1h", "N previo 1h", "hora", "hora %",                      # P,Q,R,S
-        # ---- diario ----
-        "N día", "N previo día", "día", "día %"                   # T,U,V,W
+        "Fecha","Hora","Ticker",                      # A..C
+        "Trade Cnt VERDE","Trade Cnt ROJO",           # D..E
+        "VOLUMEN ENTRA","VOLUMEN SALE",               # F..G
+        "TENDENCIA Trade Cnt.","VOLUMEN.",            # H..I (decimales)
+        "Fuerza","Filtro institucional",              # J..K
+        # 5m (L..O)
+        "N (5m SNAP)","O (5m SNAP)","5m","5m %",
+        # 15m (P..S)
+        "N (15m SNAP)","O (15m SNAP)","15m","15m %",
+        # 1h (T..W)
+        "N (1h SNAP)","O (1h SNAP)","1h","1h %",
+        # 1d (X..AA)
+        "N (1d SNAP)","O (1d SNAP)","1d","1d %"
     ]]
-    ws.update(values=encabezado, range_name="A2:W2")
+    ws.update(values=encabezado, range_name="A2:AA2")
     try:
-        ws.batch_clear(["A3:W1000"])
+        ws.batch_clear(["A3:AA2000"])
     except Exception as e:
-        print(f"⚠️ No se pudo limpiar A3:W1000 en {ws.title}: {e}")
+        print(f"⚠️ No se pudo limpiar A3:AA2000 en {ws.title}: {e}")
 
     # Agregado por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
@@ -623,135 +621,122 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Filas calculadas
-    filas = []
-    for tk in sorted(agg.keys()):
+    # Construcción de filas (A..K valores; L..AA fórmulas)
+    filas_sorted = sorted(agg.keys())
+    matriz = []
+    for i, tk in enumerate(filas_sorted, start=3):  # fila real en Sheets
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
 
-        # H/J: % dif normalizada dinero (decimal), I: volumen
+        # H/J: dinero normalizado; I: volumen (decimales)
         if m_call <= 0 and m_put <= 0:
-            diff_m = fuerza = 0.0
+            val_h = 0.0
         else:
             try:
-                diff_m = (m_call - m_put) / max(m_call, m_put) * 100
+                val_h = (m_call - m_put) / max(m_call, m_put)
             except ZeroDivisionError:
-                diff_m = 0.0
-            fuerza = diff_m
+                val_h = 0.0
 
         if v_call <= 0 and v_put <= 0:
-            diff_v = fuerza_vol = 0.0
+            val_i = 0.0
         else:
             try:
-                diff_v = (v_call - v_put) / max(v_call, v_put) * 100
+                val_i = (v_call - v_put) / max(v_call, v_put)
             except ZeroDivisionError:
-                diff_v = 0.0
-            fuerza_vol = diff_v
+                val_i = 0.0
 
-        # K: filtro institucional
-        val_h = (diff_m or 0.0) / 100.0
-        val_i = (diff_v or 0.0) / 100.0
+        # K: filtro institucional (misma regla)
         clasif_L = _clasificar_filtro_institucional(val_h, val_i)
 
-        # Cambios visuales
+        # Estado previo para resaltados (se guarda al final)
         prev_oi, prev_vol, prev_l, prev_h, prev_i = estado_prev.get(tk, ("", "", "", None, None))
-        cambio_oi  = (prev_oi  != "") and (("🟢" if fuerza>0 else "🔴" if fuerza<0 else "⚪") != prev_oi)
-        cambio_vol = (prev_vol != "") and (("🟢" if fuerza_vol>0 else "🔴" if fuerza_vol<0 else "⚪") != prev_vol)
+        color_oi  = "🟢" if val_h>0 else "🔴" if val_h<0 else "⚪"
+        color_vol = "🟢" if val_i>0 else "🔴" if val_i<0 else "⚪"
+        cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
+        cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
         es_alineado = clasif_L in ("CALLS","PUTS")
         cambio_L = es_alineado and (clasif_L != prev_l)
+        cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
+
+        # Fórmulas L..AA (con separador ';')
+        nombre_snap_5m  = f"SNAP_5min__{sheet_title}"
+        nombre_snap_15m = f"SNAP__{sheet_title}"
+        nombre_snap_1h  = f"SNAP_H__{sheet_title}"
+        nombre_snap_dia = f"SNAP_dia__{sheet_title}"
+
+        # 5m
+        L = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_5m}'!$A:$C;3;FALSO);)"
+        M = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_5m}'!$A:$B;2;FALSO);)"
+        N = f"=SI.ERROR(L{i}-M{i};0)"
+        O = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"  # Δ%
 
         # 15m
-        O15_prev, N15_curr = snap15.get(tk, (None, None))
-        P15 = (N15_curr - O15_prev) if (N15_curr is not None and O15_prev is not None) else 0.0
-        Q15 = (P15 / O15_prev) if (O15_prev not in (0, None)) else 0.0
+        P = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_15m}'!$A:$C;3;FALSO);)"
+        Q = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_15m}'!$A:$B;2;FALSO);)"
+        R = f"=SI.ERROR(P{i}-Q{i};0)"
+        S = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"  # Δ%
 
         # 1h
-        O1h_prev, N1h_curr = snap1h.get(tk, (None, None))
-        P1h = (N1h_curr - O1h_prev) if (N1h_curr is not None and O1h_prev is not None) else 0.0
-        Q1h = (P1h / O1h_prev) if (O1h_prev not in (0, None)) else 0.0
+        T = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_1h}'!$A:$C;3;FALSO);)"
+        U = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_1h}'!$A:$B;2;FALSO);)"
+        V = f"=SI.ERROR(T{i}-U{i};0)"
+        W = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"  # Δ%
 
-        # día
-        Oday_prev, Nday_curr = snapD.get(tk, (None, None))
-        Pday = (Nday_curr - Oday_prev) if (Nday_curr is not None and Oday_prev is not None) else 0.0
-        Qday = (Pday / Oday_prev) if (Oday_prev not in (0, None)) else 0.0
+        # 1d
+        X  = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_dia}'!$A:$C;3;FALSO);)"
+        Y  = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_dia}'!$A:$B;2;FALSO);)"
+        Z  = f"=SI.ERROR(X{i}-Y{i};0)"
+        AA = f"=SI( O(ESBLANCO(Y{i}); ABS(Y{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(Y{i});0) )"
 
-        filas.append({
-            "tk": tk,
-            "exp": (agg[tk]["EXP"] or a1_value or fecha_txt),
-            "hora": hora_txt,
-            "m_call": m_call, "m_put": m_put,
-            "v_call": v_call, "v_put": v_put,
-            "val_h": val_h, "val_i": val_i,
-            "K": clasif_L,
-            # 15m
-            "N15": N15_curr, "O15": O15_prev, "P15": P15, "Q15": Q15,
-            # 1h
-            "N1h": N1h_curr, "O1h": O1h_prev, "P1h": P1h, "Q1h": Q1h,
-            # día
-            "Nd": Nday_curr, "Od": Oday_prev, "Pd": Pday, "Qd": Qday,
-            "cambio_oi": cambio_oi, "cambio_vol": cambio_vol, "cambio_L": cambio_L
-        })
+        matriz.append([
+            agg[tk]["EXP"] or a1_value or fecha_txt,  # A
+            hora_txt,                                  # B
+            tk,                                        # C
+            fmt_millones(m_call),                      # D
+            fmt_millones(m_put),                       # E
+            fmt_entero_miles(v_call),                  # F
+            fmt_entero_miles(v_put),                   # G
+            val_h,                                     # H (decimal)
+            val_i,                                     # I (decimal)
+            val_h,                                     # J = H
+            clasif_L,                                  # K
+            L, M, N, O,                                # L..O (5m)
+            P, Q, R, S,                                # P..S (15m)
+            T, U, V, W,                                # T..W (1h)
+            X, Y, Z, AA                                # X..AA (1d)
+        ])
 
         # guardar estado
-        color_oi  = "🟢" if fuerza>0 else "🔴" if fuerza<0 else "⚪"
-        color_vol = "🟢" if fuerza_vol>0 else "🔴" if fuerza_vol<0 else "⚪"
         estado_nuevo[tk] = (color_oi, color_vol, clasif_L, val_h, val_i)
 
-    # Ordenar por fuerza (J = H)
-    filas.sort(key=lambda r: -(r["val_h"] if isinstance(r["val_h"], (int,float)) else 0.0))
+    # Ordenar por fuerza (H)
+    matriz.sort(key=lambda row: -(row[7] if isinstance(row[7], (int, float)) else 0.0))
 
-    # Escribir A..W
-    matriz = []
-    for r in filas:
-        matriz.append([
-            r["exp"], r["hora"], r["tk"],            # A-C
-            fmt_millones(r["m_call"]),               # D
-            fmt_millones(r["m_put"]),                # E
-            fmt_entero_miles(r["v_call"]),           # F
-            fmt_entero_miles(r["v_put"]),            # G
-            r["val_h"],                               # H (decimal)
-            r["val_i"],                               # I (decimal)
-            r["val_h"],                               # J = H
-            r["K"],                                   # K
-            "" if r["N15"] is None else r["N15"],     # L
-            "" if r["O15"] is None else r["O15"],     # M
-            r["P15"],                                  # N
-            r["Q15"],                                  # O
-            "" if r["N1h"] is None else r["N1h"],     # P
-            "" if r["O1h"] is None else r["O1h"],     # Q
-            r["P1h"],                                  # R
-            r["Q1h"],                                  # S
-            "" if r["Nd"] is None else r["Nd"],        # T
-            "" if r["Od"] is None else r["Od"],        # U
-            r["Pd"],                                   # V
-            r["Qd"],                                   # W
-        ])
-        cambios_por_ticker[r["tk"]] = (r["cambio_oi"], r["cambio_vol"], r["cambio_L"])
-
+    # Escribir A..AA (fila 3 en adelante)
     if matriz:
-        ws.update(values=matriz, range_name=f"A3:W{len(matriz)+2}", value_input_option="USER_ENTERED")
+        ws.update(values=matriz, range_name=f"A3:AA{len(matriz)+2}", value_input_option="USER_ENTERED")
 
-    # === Formato: % en H/I/J y en O/S/W; color en K y H/I por cambio ===
+    # === Formato: % en H/I/J y en O/S/W/AA, y colores en K/H/I ===
     if matriz:
         sheet_id = ws.id
         start_row = 2   # 0-based (fila 3)
         total_rows = len(matriz)
         req = []
 
-        # % en H,I,J
-        for col in (7,8,9):
+        # % en H, I, J -> 0.0%
+        for col in (7, 8, 9):
             req.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row,
                               "endRowIndex": start_row + total_rows,
                               "startColumnIndex": col, "endColumnIndex": col+1},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}}},  # <- aquí
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             })
 
-        # % en O, S, W
-        for col in (14, 18, 22):
+        # % en O, S, W, AA -> 0%
+        for col in (14, 18, 22, 26):
             req.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row,
@@ -762,6 +747,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 }
             })
 
+        # Colores en K/H/I (amarillo si hubo cambio)
         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
@@ -793,7 +779,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 }
             })
 
-            # H/I por signo (+ amarillo si hubo cambio)
+            # H / I
             val_h = ffloat(row[7])
             val_i = ffloat(row[8])
             bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
@@ -817,19 +803,44 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         if req:
             ws.spreadsheet.batch_update({"requests": req})
 
-    # === SNAPSHOTS ===
+    # === SNAPSHOTS (escritura) ===
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
+    # mapa N = (m_call - m_put)
+    n_map = {}
+    for row in matriz:
+        tk = row[2]
+        # D y E están en string (formateados). Recalcular con base a m_call/m_put originales: fácil, tomemos val_h y total ≈ no precisa.
+        # Usamos directamente m_call/m_put guardados arriba en agg:
+        m_call = agg[tk]["CALL"][0]
+        m_put  = agg[tk]["PUT"][0]
+        n_map[tk] = round(m_call - m_put, 1)
 
-    # 15m
+    # 5m — SIEMPRE
+    ts_now_5m = now_ny.strftime("%Y-%m-%d %H:%M:%S")
+    data_5m = [["Ticker","N_prev","N_curr","ts"]]
+    # Para N_prev 5m usamos el N_curr anterior (si existía)
+    snap5_prev = _leer_snap_both_map(ws_snap5m)  # (N_prev, N_curr)
+    for tk in sorted(n_map.keys()):
+        prev_O, prev_N = snap5_prev.get(tk, (None, None))
+        n_prev = prev_N if prev_N is not None else ""
+        n_curr = n_map[tk]
+        data_5m.append([tk, n_prev, n_curr, ts_now_5m])
+    try:
+        ws_snap5m.batch_clear(["A2:D10000"])
+    except Exception:
+        pass
+    ws_snap5m.update(values=data_5m, range_name=f"A1:D{len(data_5m)}")
+
+    # 15m — cada :00/:15/:30/:45 NY
     q_key = f"last_q_snap__{sheet_title}"
     curr_q = now_ny.strftime("%Y-%m-%d %H:%M_q%M")
     last_q = _meta_read(ws_meta, q_key, "")
     if _es_corte_15m(now_ny) and last_q != curr_q:
-        n_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
         data = [["Ticker","N_prev","N_curr","ts"]]
+        snap15_prev = _leer_snap_both_map(ws_snap15)
         for tk in sorted(n_map.keys()):
-            prev_O, prev_N = snap15.get(tk, (None, None))
+            prev_O, prev_N = snap15_prev.get(tk, (None, None))
             n_prev = prev_N if prev_N is not None else ""
             n_curr = n_map[tk]
             data.append([tk, n_prev, n_curr, ts_now])
@@ -841,17 +852,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _meta_write(ws_meta, q_key, curr_q)
         print(f"🧊 SNAP 15m actualizado ({ws_snap15.title}) @ {ts_now} NY.", flush=True)
 
-    # 1h
+    # 1h — cada :00 NY
     hour_key  = f"last_hour_snap__{sheet_title}"
     curr_hour = now_ny.strftime("%Y-%m-%d %H")
     last_hour = _meta_read(ws_meta, hour_key, "")
-    print(f"[snap-1h] {sheet_title} NY={now_ny:%Y-%m-%d %H:%M} win={_es_cierre_hora(now_ny)} last={last_hour} curr={curr_hour}", flush=True)
     if _es_cierre_hora(now_ny) and last_hour != curr_hour:
-        n_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
         data = [["Ticker","N_prev","N_curr","ts"]]
+        snap1h_prev = _leer_snap_both_map(ws_snap1h)
         for tk in sorted(n_map.keys()):
-            prev_O, prev_N = snap1h.get(tk, (None, None))
+            prev_O, prev_N = snap1h_prev.get(tk, (None, None))
             n_prev = prev_N if prev_N is not None else ""
             n_curr = n_map[tk]
             data.append([tk, n_prev, n_curr, ts_now])
@@ -863,16 +873,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _meta_write(ws_meta, hour_key, curr_hour)
         print(f"🧊 SNAP 1H actualizado ({ws_snap1h.title}) @ {ts_now} NY.", flush=True)
 
-    # diario 15:53 NY
+    # 1d — 15:53 NY
     day_key  = f"last_day_snap__{sheet_title}"
     curr_day = now_ny.strftime("%Y-%m-%d")
     last_day = _meta_read(ws_meta, day_key, "")
     if _es_corte_diario_1553(now_ny) and last_day != curr_day:
-        n_map = {r["tk"]: round(r["m_call"] - r["m_put"], 1) for r in filas}
         ts_now = now_ny.strftime("%Y-%m-%d %H:%M:%S")
         data = [["Ticker","N_prev","N_curr","ts"]]
+        snapD_prev = _leer_snap_both_map(ws_snapD)
         for tk in sorted(n_map.keys()):
-            prev_O, prev_N = snapD.get(tk, (None, None))
+            prev_O, prev_N = snapD_prev.get(tk, (None, None))
             n_prev = prev_N if prev_N is not None else ""
             n_curr = n_map[tk]
             data.append([tk, n_prev, n_curr, ts_now])
@@ -888,7 +898,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     _escribir_estado(ws_estado, estado_nuevo)
 
     # Devolver mapeo K por ticker
-    return {r["tk"]: r["K"] for r in filas} if filas else {}
+    return {row[2]: row[10] for row in matriz} if matriz else {}
+
 
 # ========= ACCESOS — helpers existentes (se mantienen) =========
 def S(v) -> str:
