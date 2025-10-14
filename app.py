@@ -1,9 +1,10 @@
-# app.py — milo-oi-service (unificado con snapshots 15m / 1h / diario + columnas K..W)
+# app.py — milo-oi-service (unificado con snapshots 5m / 15m / 1h / diario + columnas H..AA)
 # - Mantiene toda la estructura/funciones originales.
-# - Columna K: "Filtro institucional" (CALLS/PUTS/"") en base a H e I (idéntico a tu regla).
-# - Columnas L..O (15 min): de SNAP__<hoja>  -> [N_curr, N_prev, Δ, Δ%].
-# - Columnas P..S (1 hora): de SNAP_H__<hoja> -> [N_curr, N_prev, Δ, Δ%].
-# - Columnas T..W (diario): de SNAP_dia__<hoja> -> [N_curr, N_prev, Δ, Δ%] a las 15:53 NY.
+# - H (tendencia), I (volumen), J = H, K (Filtro institucional CALLS/PUTS/"") en base a H e I (idéntico a tu regla).
+# - 5m (L..O): de SNAP_5min__<hoja>  -> [N_curr, N_prev, Δ, Δ%].
+# - 15m (P..S): de SNAP__<hoja>      -> [N_curr, N_prev, Δ, Δ%].
+# - 1h  (T..W): de SNAP_H1__<hoja>   -> [N_curr, N_prev, Δ, Δ%].
+# - 1d (X..AA): de SNAP_dia__<hoja>  -> [N_curr, N_prev, Δ, Δ%] a las 15:53 NY.
 
 import os
 import time
@@ -518,7 +519,7 @@ def _parse_ny_naive(ts_str):
     except Exception:
         return None
 
-# ========= Escritura en Google Sheets (K..AA con fórmulas en L..AA) =========
+# ========= Escritura en Google Sheets (K..AA con fórmulas en H..AA) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # --- Abrir hoja destino ---
     try:
@@ -549,7 +550,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # SNAPs (nombres consistentes con el bloque “bueno”)
     ws_snap5m = _ensure_snapshot_sheet(doc, f"SNAP_5min__{sheet_title}")  # 5m
     ws_snap15 = _ensure_snapshot_sheet(doc, f"SNAP__{sheet_title}")       # 15m
-    ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H1__{sheet_title}")    # 1h  <- corregido
+    ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H1__{sheet_title}")    # 1h
     ws_snapD  = _ensure_snapshot_sheet(doc, f"SNAP_dia__{sheet_title}")   # 1d
 
     # Recolecta datos OI por ticker
@@ -640,7 +641,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         # Nombres de hojas de snapshot
         nombre_snap_5m  = f"SNAP_5min__{sheet_title}"
         nombre_snap_15m = f"SNAP__{sheet_title}"
-        nombre_snap_1h  = f"SNAP_H1__{sheet_title}"   # <- corregido
+        nombre_snap_1h  = f"SNAP_H1__{sheet_title}"
         nombre_snap_dia = f"SNAP_dia__{sheet_title}"
 
         # ==== FÓRMULAS ====
@@ -692,9 +693,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         # guardar estado (para colores en siguiente corrida)
         estado_nuevo[tk] = (color_oi, color_vol, clasif_num, val_h_num, val_i_num)
 
-    # Ordenar por fuerza → usamos el valor numérico (val_h_num) que ya calculamos arriba
-    matriz.sort(key=lambda row: 0, reverse=False)  # mantener orden de escritura; el sort real depende de tu preferencia
-
     # Escribir A..AA
     if matriz:
         ws.update(values=matriz, range_name=f"A3:AA{len(matriz)+2}", value_input_option="USER_ENTERED")
@@ -730,7 +728,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 }
             })
 
-        # Colores en K/H/I (amarillo si hubo cambio) — usamos los flags calculados arriba
+        # Colores en K/H/I (amarillo si hubo cambio)
         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
@@ -1068,7 +1066,7 @@ def procesar_autorizados_drive(accesos_doc, main_file_url):
                         hoja_aut.update_cell(idx, cols["nota"], f"ERROR_REVOKE: {e}")
 
     print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
-    return {"activados": activados, "revocados": revocados}
+    return {"activados": 0 + activados, "revocados": 0 + revocados}
 
 # ========= ACCESOS — modo GROUPS (opcional; se conserva) =========
 def _parse_duration_groups(txt):
