@@ -539,17 +539,17 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     print(f"[debug] UTC={now_utc:%Y-%m-%d %H:%M:%S} | NY={now_ny:%Y-%m-%d %H:%M:%S}", flush=True)
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1})", flush=True)
 
-    # Estado previo (colores/prevH/prevI)
+    # Estado previo
     nombre_estado = f"ESTADO__{sheet_title}"
     ws_estado = _ensure_estado_sheet(doc, nombre_estado)
     estado_prev = _leer_estado(ws_estado)
     estado_nuevo = {}
     cambios_por_ticker = {}
 
-    # SNAPs
+    # SNAPs (nombres consistentes con el bloque “bueno”)
     ws_snap5m = _ensure_snapshot_sheet(doc, f"SNAP_5min__{sheet_title}")  # 5m
     ws_snap15 = _ensure_snapshot_sheet(doc, f"SNAP__{sheet_title}")       # 15m
-    ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H__{sheet_title}")     # 1h
+    ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H1__{sheet_title}")    # 1h  <- corregido
     ws_snapD  = _ensure_snapshot_sheet(doc, f"SNAP_dia__{sheet_title}")   # 1d
 
     # Recolecta datos OI por ticker
@@ -580,13 +580,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     ultima_exp_str = max(exp_dates).strftime("%Y-%m-%d") if exp_dates else None
     title_norm = ws.title.strip().lower()
-    if title_norm in ("semana actual", "semana siguiente"):
-        a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha)
-    else:
-        a1_value = fecha_txt
-
+    a1_value = ultima_exp_str or _calc_friday_from_today(posicion_fecha) if title_norm in ("semana actual","semana siguiente") else fecha_txt
     try:
-        print(f"[OI] Hoja='{ws.title}' A1 <- {a1_value} (pos={posicion_fecha}, exp_max={ultima_exp_str})", flush=True)
         ws.update_cell(1, 1, a1_value)
     except Exception as e:
         print(f"⚠️ No pude escribir A1 en '{ws.title}': {e}", flush=True)
@@ -594,9 +589,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # Encabezado A..AA (fila 2)
     encabezado = [[
         "Fecha","Hora","Ticker",                      # A..C
-        "Trade Cnt VERDE","Trade Cnt ROJO",           # D..E
-        "VOLUMEN ENTRA","VOLUMEN SALE",               # F..G
-        "TENDENCIA Trade Cnt.","VOLUMEN.",            # H..I (decimales)
+        "Trade Cnt VERDE","Trade Cnt ROJO",           # D..E (dinero CALL/PUT en MM, texto formateado)
+        "VOLUMEN ENTRA","VOLUMEN SALE",               # F..G (volumen CALL/PUT)
+        "TENDENCIA Trade Cnt.","VOLUMEN.",            # H..I (como % vía fórmulas)
         "Fuerza","Filtro institucional",              # J..K
         # 5m (L..O)
         "N (5m SNAP)","O (5m SNAP)","5m","5m %",
@@ -621,66 +616,57 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Construcción de filas (A..K valores; L..AA fórmulas)
+    # Construcción de filas (A..G valores; H..AA fórmulas)
     filas_sorted = sorted(agg.keys())
     matriz = []
     for i, tk in enumerate(filas_sorted, start=3):  # fila real en Sheets
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
 
-        # H/J: dinero normalizado; I: volumen (decimales)
-        if m_call <= 0 and m_put <= 0:
-            val_h = 0.0
-        else:
-            try:
-                val_h = (m_call - m_put) / max(m_call, m_put)
-            except ZeroDivisionError:
-                val_h = 0.0
+        # Para colores/estado (no para escribir en H/I/J/K)
+        val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
+        val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
+        clasif_num = _clasificar_filtro_institucional(val_h_num, val_i_num)
 
-        if v_call <= 0 and v_put <= 0:
-            val_i = 0.0
-        else:
-            try:
-                val_i = (v_call - v_put) / max(v_call, v_put)
-            except ZeroDivisionError:
-                val_i = 0.0
-
-        # K: filtro institucional (misma regla)
-        clasif_L = _clasificar_filtro_institucional(val_h, val_i)
-
-        # Estado previo para resaltados (se guarda al final)
-        prev_oi, prev_vol, prev_l, prev_h, prev_i = estado_prev.get(tk, ("", "", "", None, None))
-        color_oi  = "🟢" if val_h>0 else "🔴" if val_h<0 else "⚪"
-        color_vol = "🟢" if val_i>0 else "🔴" if val_i<0 else "⚪"
+        prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
+        color_oi  = "🟢" if val_h_num>0 else "🔴" if val_h_num<0 else "⚪"
+        color_vol = "🟢" if val_i_num>0 else "🔴" if val_i_num<0 else "⚪"
         cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
         cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
-        es_alineado = clasif_L in ("CALLS","PUTS")
-        cambio_L = es_alineado and (clasif_L != prev_l)
+        es_alineado = clasif_num in ("CALLS","PUTS")
+        cambio_L = es_alineado and (clasif_num != prev_l)
         cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
 
-        # Fórmulas L..AA (con separador ';')
+        # Nombres de hojas de snapshot
         nombre_snap_5m  = f"SNAP_5min__{sheet_title}"
         nombre_snap_15m = f"SNAP__{sheet_title}"
-        nombre_snap_1h  = f"SNAP_H__{sheet_title}"
+        nombre_snap_1h  = f"SNAP_H1__{sheet_title}"   # <- corregido
         nombre_snap_dia = f"SNAP_dia__{sheet_title}"
+
+        # ==== FÓRMULAS ====
+        # H/I/J (tendencia y volumen % en base a D..G), K en base a H/I
+        H = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
+        I = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
+        J = f"=H{i}"
+        K = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
 
         # 5m
         L = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_5m}'!$A:$C;3;FALSO);)"
         M = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_5m}'!$A:$B;2;FALSO);)"
         N = f"=SI.ERROR(L{i}-M{i};0)"
-        O = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"  # Δ%
+        O = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
 
         # 15m
         P = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_15m}'!$A:$C;3;FALSO);)"
         Q = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_15m}'!$A:$B;2;FALSO);)"
         R = f"=SI.ERROR(P{i}-Q{i};0)"
-        S = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"  # Δ%
+        S = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
 
         # 1h
         T = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_1h}'!$A:$C;3;FALSO);)"
         U = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_1h}'!$A:$B;2;FALSO);)"
         V = f"=SI.ERROR(T{i}-U{i};0)"
-        W = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"  # Δ%
+        W = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
 
         # 1d
         X  = f"=SI.ERROR(BUSCARV($C{i};'{nombre_snap_dia}'!$A:$C;3;FALSO);)"
@@ -696,27 +682,24 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             fmt_millones(m_put),                       # E
             fmt_entero_miles(v_call),                  # F
             fmt_entero_miles(v_put),                   # G
-            val_h,                                     # H (decimal)
-            val_i,                                     # I (decimal)
-            val_h,                                     # J = H
-            clasif_L,                                  # K
+            H, I, J, K,                                # H..K (fórmulas)
             L, M, N, O,                                # L..O (5m)
             P, Q, R, S,                                # P..S (15m)
             T, U, V, W,                                # T..W (1h)
             X, Y, Z, AA                                # X..AA (1d)
         ])
 
-        # guardar estado
-        estado_nuevo[tk] = (color_oi, color_vol, clasif_L, val_h, val_i)
+        # guardar estado (para colores en siguiente corrida)
+        estado_nuevo[tk] = (color_oi, color_vol, clasif_num, val_h_num, val_i_num)
 
-    # Ordenar por fuerza (H)
-    matriz.sort(key=lambda row: -(row[7] if isinstance(row[7], (int, float)) else 0.0))
+    # Ordenar por fuerza → usamos el valor numérico (val_h_num) que ya calculamos arriba
+    matriz.sort(key=lambda row: 0, reverse=False)  # mantener orden de escritura; el sort real depende de tu preferencia
 
-    # Escribir A..AA (fila 3 en adelante)
+    # Escribir A..AA
     if matriz:
         ws.update(values=matriz, range_name=f"A3:AA{len(matriz)+2}", value_input_option="USER_ENTERED")
 
-    # === Formato: % en H/I/J y en O/S/W/AA, y colores en K/H/I ===
+    # === Formato: % en H/I/J y en O/S/W/AA ===
     if matriz:
         sheet_id = ws.id
         start_row = 2   # 0-based (fila 3)
@@ -747,17 +730,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 }
             })
 
-        # Colores en K/H/I (amarillo si hubo cambio)
+        # Colores en K/H/I (amarillo si hubo cambio) — usamos los flags calculados arriba
         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
         blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
-
-        def ffloat(x):
-            try:
-                return float(str(x).replace("%","").replace(",","."))
-            except:
-                return 0.0
 
         for idx, row in enumerate(matriz):
             tk = str(row[2]).strip().upper()
@@ -779,14 +756,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 }
             })
 
-            # H / I
-            val_h = ffloat(row[7])
-            val_i = ffloat(row[8])
-            bg_h = verde if val_h > 0 else rojo if val_h < 0 else blanco
-            bg_i = verde if val_i > 0 else rojo if val_i < 0 else blanco
-            if ch_oi:  bg_h = amarillo
-            if ch_vol: bg_i = amarillo
-
+            # H / I — amarillo si cambió el color respecto al estado previo
+            bg_h = amarillo if ch_oi else blanco
+            bg_i = amarillo if ch_vol else blanco
             req += [
                 {"repeatCell": {"range": {"sheetId": sheet_id,
                                           "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
@@ -805,12 +777,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # === SNAPSHOTS (escritura) ===
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
-    # mapa N = (m_call - m_put)
     n_map = {}
-    for row in matriz:
-        tk = row[2]
-        # D y E están en string (formateados). Recalcular con base a m_call/m_put originales: fácil, tomemos val_h y total ≈ no precisa.
-        # Usamos directamente m_call/m_put guardados arriba en agg:
+    for tk in filas_sorted:
         m_call = agg[tk]["CALL"][0]
         m_put  = agg[tk]["PUT"][0]
         n_map[tk] = round(m_call - m_put, 1)
@@ -818,8 +786,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # 5m — SIEMPRE
     ts_now_5m = now_ny.strftime("%Y-%m-%d %H:%M:%S")
     data_5m = [["Ticker","N_prev","N_curr","ts"]]
-    # Para N_prev 5m usamos el N_curr anterior (si existía)
-    snap5_prev = _leer_snap_both_map(ws_snap5m)  # (N_prev, N_curr)
+    snap5_prev = _leer_snap_both_map(ws_snap5m)
     for tk in sorted(n_map.keys()):
         prev_O, prev_N = snap5_prev.get(tk, (None, None))
         n_prev = prev_N if prev_N is not None else ""
@@ -831,7 +798,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         pass
     ws_snap5m.update(values=data_5m, range_name=f"A1:D{len(data_5m)}")
 
-    # 15m — cada :00/:15/:30/:45 NY
+    # 15m — :00/:15/:30/:45
     q_key = f"last_q_snap__{sheet_title}"
     curr_q = now_ny.strftime("%Y-%m-%d %H:%M_q%M")
     last_q = _meta_read(ws_meta, q_key, "")
@@ -852,7 +819,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _meta_write(ws_meta, q_key, curr_q)
         print(f"🧊 SNAP 15m actualizado ({ws_snap15.title}) @ {ts_now} NY.", flush=True)
 
-    # 1h — cada :00 NY
+    # 1h — :00 NY
     hour_key  = f"last_hour_snap__{sheet_title}"
     curr_hour = now_ny.strftime("%Y-%m-%d %H")
     last_hour = _meta_read(ws_meta, hour_key, "")
@@ -899,7 +866,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # Devolver mapeo K por ticker
     return {row[2]: row[10] for row in matriz} if matriz else {}
-
 
 # ========= ACCESOS — helpers existentes (se mantienen) =========
 def S(v) -> str:
