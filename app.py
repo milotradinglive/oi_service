@@ -739,16 +739,17 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         req = []
 
         # % en H,I,J
-        for col in (7,8,9):  # H=7, I=8, J=9 (0-based)
+        for col in (7,8,9):
             req.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": start_row,
                               "endRowIndex": start_row + total_rows,
                               "startColumnIndex": col, "endColumnIndex": col+1},
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.%"}}},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}}},  # <- aquí
                     "fields": "userEnteredFormat.numberFormat"
                 }
             })
+
         # % en O, S, W
         for col in (14, 18, 22):
             req.append({
