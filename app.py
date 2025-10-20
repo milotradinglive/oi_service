@@ -586,6 +586,27 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     cache_h1  = _get_cache_for(ws_snap1h)
     cache_d   = _get_cache_for(ws_snapD)
 
+    # ===== Semilla diaria (para que Y no venga en blanco al inicio del día) =====
+    def _fecha_ts_ny(ts_str: str):
+        try:
+            dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            return NY_TZ.localize(dt).date()
+        except:
+            return None
+
+    def _snap_dia_desactualizado(ws_snap, hoy_ny):
+        rows = _safe_read(lambda: ws_snap.get_values("A2:D2"))
+        if not rows or not rows[0] or len(rows[0]) < 4:
+            return True
+        ts = rows[0][3]
+        f_ts = _fecha_ts_ny(ts)
+        return (f_ts is None) or (f_ts != hoy_ny)
+
+    hoy_ny = (_now_ny()).date()
+    if _snap_dia_desactualizado(ws_snapD, hoy_ny):
+        # Recolectaremos primero para poder sembrar con los N_curr de hoy
+        pass  # (sembramos más abajo cuando ya tengamos m_call/m_put)
+
     # Recolecta datos
     datos = []
     for tk in TICKERS:
@@ -597,28 +618,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     # Agregado por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
-        if not agg[tk]["EXP"] and exp: agg[tk]["EXP"] = exp
+        if not agg[tk]["EXP"] and exp:
+            agg[tk]["EXP"] = exp
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Cálculos / filas
-    from gspread.utils import rowcol_to_a1
-    encabezado = [[
-        "Fecha","Hora","Ticker",
-        "Trade Cnt VERDE","Trade Cnt ROJO",
-        "VOLUMEN ENTRA","VOLUMEN SALE",
-        "TENDENCIA Trade Cnt.","VOLUMEN.",
-        "Fuerza","Filtro institucional",
-        "N (5m SNAP)","O (5m SNAP)","5m","5m %",
-        "N (15m SNAP)","O (15m SNAP)","15m","15m %",
-        "N (1h SNAP)","O (1h SNAP)","1h","1h %",
-        "N (1d SNAP)","O (1d SNAP)","1d","1d %"
-    ]]
-    end_a1 = rowcol_to_a1(2, len(encabezado[0]))
-    _update_values(ws, f"A2:{end_a1}", encabezado)
-
-    filas_sorted = sorted(agg.keys())
-    # 1) Prepara métricas por ticker (J = val_h)
+    # Métricas por ticker y estado
     stats = {}
     for tk in agg.keys():
         m_call, v_call = agg[tk]["CALL"]
@@ -643,10 +648,22 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             "val_h": val_h_num, "val_i": val_i_num, "clasif": clasif,
         }
 
-    # 2) Ordenar por columna J (== val_h) de mayor a menor
+    # Ordenar por val_h desc (tu "Fuerza")
     filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
-    # 3) Construir encabezado y tabla ya ordenada
+    # ===== Si el snapshot diario estaba desactualizado, SEMBRAR ahora =====
+    if _snap_dia_desactualizado(ws_snapD, hoy_ny):
+        ts_now_seed = ny.strftime("%Y-%m-%d %H:%M:%S")
+        data_seed = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in filas_sorted:
+            n_curr = round(stats[tk]["m_call"] - stats[tk]["m_put"], 1)
+            n_prev = cache_d.get(tk, n_curr)   # si no hay previo, usa curr
+            data_seed.append([tk, n_prev, n_curr, ts_now_seed])
+            cache_d[tk] = n_curr
+        _retry(lambda: ws_snapD.batch_clear(["A2:D10000"]))
+        _update_values(ws_snapD, f"A1:D{len(data_seed)}", data_seed, user_entered=False)
+
+    # Encabezado
     from gspread.utils import rowcol_to_a1
     encabezado = [[
         "Fecha","Hora","Ticker",
@@ -662,38 +679,40 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     end_a1 = rowcol_to_a1(2, len(encabezado[0]))
     _update_values(ws, f"A2:{end_a1}", encabezado)
 
-    tabla = []
+    # Tabla con fórmulas (incluye Y con fallback a X y AA con vacío si Y es blanco/0)
     s5  = f"SNAP_5min__{sheet_title}"
     s15 = f"SNAP__{sheet_title}"
     s1h = f"SNAP_H1__{sheet_title}"
     sd  = f"SNAP_dia__{sheet_title}"
 
+    tabla = []
     for i, tk in enumerate(filas_sorted, start=3):
         m_call = stats[tk]["m_call"]; m_put = stats[tk]["m_put"]
         v_call = stats[tk]["v_call"]; v_put = stats[tk]["v_put"]
 
-        H = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
-        I = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
-        J = f"=H{i}"
-        K = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
+        H  = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
+        I  = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
+        J  = f"=H{i}"
+        K  = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
 
-        L = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
-        M = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
-        N = f"=SI.ERROR(L{i}-M{i};0)"
-        O = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
+        L  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
+        M  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
+        N  = f"=SI.ERROR(L{i}-M{i};0)"
+        O  = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
 
-        P = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
-        Q = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
-        R = f"=SI.ERROR(P{i}-Q{i};0)"
-        S = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
+        P  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
+        Q  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
+        R  = f"=SI.ERROR(P{i}-Q{i};0)"
+        S  = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
 
-        T = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
-        U = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO);)"
-        V = f"=SI.ERROR(T{i}-U{i};0)"
-        W = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
+        T  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
+        U  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO);)"
+        V  = f"=SI.ERROR(T{i}-U{i};0)"
+        W  = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
 
+        # ======== 1D con fallback en Y y AA en blanco si Y vacío/0 ========
         X  = f"=SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$C;3;FALSO);)"
-        Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$B;2;FALSO);)"
+        Y  = f"=LET(_y;SI.ERROR(BUSCARV($C{i};'{sd}'!$A:$B;2;FALSO););SI(ESBLANCO(_y); X{i}; _y))"
         Z  = f"=SI.ERROR(X{i}-Y{i};0)"
         AA = f"=SI( O(ESBLANCO(Y{i}); ABS(Y{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(Y{i});0) )"
 
@@ -732,7 +751,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT","pattern": "0%"}}},
                                        "fields": "userEnteredFormat.numberFormat"}})
 
-        # Colores H/I/K (amarillo si cambio respecto estado previo)
+        # Colores (sin “amarillo por cambio” si no lo quieres; mantengo tu lógica actual)
         verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
@@ -787,7 +806,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
     _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
 
-    # 15m — cortes
+    # 15m — cortes :00/:15/:30/:45
     if _es_corte_15m(ny):
         data_15 = [["Ticker","N_prev","N_curr","ts"]]
         for tk in sorted(n_map.keys()):
@@ -808,11 +827,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _retry(lambda: ws_snap1h.batch_clear(["A2:D10000"]))
         _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
 
+    # 1d — 15:53 NY (con n_prev = cache o curr si no existe)
     if _es_corte_1553(ny):
         data_d = [["Ticker","N_prev","N_curr","ts"]]
         for tk in sorted(n_map.keys()):
             n_curr = n_map[tk]
-            n_prev = cache_d.get(tk, n_curr)  # <-- clave: usa n_curr si no hay previo
+            n_prev = cache_d.get(tk, n_curr)  # clave: si no hay previo, usa curr
             data_d.append([tk, n_prev, n_curr, ts])
             cache_d[tk] = n_curr
         _retry(lambda: ws_snapD.batch_clear(["A2:D10000"]))
@@ -823,6 +843,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # Retorno mapeo K
     return {tk: estado_nuevo[tk][2] for tk in filas_sorted}
+
 
 # ========= Runner de UNA corrida =========
 def run_once(skip_oi: bool = False):
