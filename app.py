@@ -707,7 +707,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         S  = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
 
         T  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
-        U  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO);)"
+        U  = f"=LET(_u;SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_u); T{i}; _u))"
         V  = f"=SI.ERROR(T{i}-U{i};0)"
         W  = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
 
@@ -821,8 +821,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     if _es_corte_1h(ny):
         data_h1 = [["Ticker","N_prev","N_curr","ts"]]
         for tk in sorted(n_map.keys()):
-            n_prev = cache_h1.get(tk, "")
             n_curr = n_map[tk]
+            n_prev = cache_h1.get(tk, n_curr)  # ← si no hay previo, usa el mismo curr
             data_h1.append([tk, n_prev, n_curr, ts])
             cache_h1[tk] = n_curr
         _retry(lambda: ws_snap1h.batch_clear(["A2:D10000"]))
