@@ -74,7 +74,7 @@ TICKERS = [
     "AAPL","AMD","AMZN","BA","BAC","DIA","GLD","GOOG","IBM","INTC",
     "IWM","JPM","META","MRNA","MSFT","NFLX","NVDA","NVTS","ORCL","UBER",
     "PLTR","QQQ","SLV","SNAP","SPY","TNA","TSLA","USO","WFC","WMT","XOM","V",
-    "URA","AAPU","CVX","METU","COIN","PYPG","AMDL",
+    "URA","CVX","PYPL",
 ]
 
 # ========= Tradier =========
