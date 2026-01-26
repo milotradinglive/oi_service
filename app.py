@@ -815,7 +815,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         X = f"=SI.ERROR(BUSCARV($C{i};'{sd0800}'!$A:$C;3;FALSO);\"\")"
         Y = f"=SI.ERROR(BUSCARV($C{i};'{sd1550}'!$A:$C;3;FALSO);\"\")"
         Z  = f"=SI.ERROR(Y{i}-X{i};0)"                                # Δ = Y − X
-        AA = f"=LET(x;SI.ERROR(VALOR(SUSTITUIR(X{i};\".\";\",\"));\"\" ); y;SI.ERROR(VALOR(SUSTITUIR(Y{i};\".\";\",\"));\"\" ); SI( O(x=\"\"; y=\"\"; ABS(x)<0,5 ); \"\"; SI.ERROR((y-x)/ABS(x); \"\") ) )"
+        AA = f"""=LET(x;SI.ERROR(VALOR(SUSTITUIR(X{i};".";","));""); y;SI.ERROR(VALOR(SUSTITUIR(Y{i};".";","));""); SI( O(x=""; y=""; ABS(x)<0,5); ""; SI.ERROR((y-x)/ABS(x);"")))"""
 
         tabla.append([
             agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
