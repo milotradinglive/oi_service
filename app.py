@@ -173,6 +173,21 @@ def _es_corte_15m(dt=None):
 def _es_corte_1h(dt=None):
     ny = dt or _now_ny()
     return ny.minute == 0
+def _es_corte_1hConVentana(dt=None, ventana_min=3):
+    ny = dt or _now_ny()
+    return ny.minute < ventana_min  # true de :00 a :02 NY
+
+def _floor_hour(dt):
+    return dt.replace(minute=0, second=0, microsecond=0)
+
+def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
+    key = f"last_h1_hour_iso__{scope_key}"  # clave por hoja
+    last_iso = _meta_read(ws_meta, key, "")
+    current_hour = _floor_hour(ny_now).isoformat()
+    if last_iso == current_hour:
+        return False
+    _meta_write(ws_meta, key, current_hour)
+    return True
 
 def _es_corte_1553(dt=None):
     ny = dt or _now_ny()
@@ -833,25 +848,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             data_15.append([tk, n_prev, n_curr, ts])
             cache_15m[tk] = n_curr
         _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
-
-        # --- Ventana de gracia para snapshot 1h ---
-    def _es_corte_1hConVentana(dt=None, ventana_min=3):
-        ny = dt or _now_ny()
-        return ny.minute == 0
-
-    def _floor_hour(dt):
-        return dt.replace(minute=0, second=0, microsecond=0)
-
-    def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
-        key = f"last_h1_hour_iso__{scope_key}"  # ← clave por hoja
-        last_iso = _meta_read(ws_meta, key, "")
-        current_hour = _floor_hour(ny_now).isoformat()
-        if last_iso == current_hour:
-            return False
-        _meta_write(ws_meta, key, current_hour)
-        return True
-
-    ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
     # 1h — con ventana de gracia
     if _es_corte_1hConVentana(ny, ventana_min=3) and _should_run_h1_once(ws_meta, ny, sheet_title):
