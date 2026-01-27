@@ -78,7 +78,7 @@ REL_MIN_LEN = {
 REL_LEN = max(REL_MIN_LEN.values())  # deques guardan (última + base) => maxlen = REL_LEN + 1
 
 # Umbral único para señal en las 4 columnas AB..AE
-REL_THRESH = {"5m": 1.0, "15m": 1.0, "1h": 1.0, "1d": 1.0}
+REL_THRESH = {"5m": 0.0, "15m": 0.0, "1h": 0.0, "1d": 0.0}
 
 def _min_len(tf_key: str) -> int:
     return int(REL_MIN_LEN.get(tf_key, 10))
@@ -1636,12 +1636,12 @@ def actualizar_hoja(hoja_objetivo, posicion_fecha):
         return str(v).replace('.', ',')
 
     # Δ% (O, S, W, AA). Ajusta en vivo:
-    PCT_POS = {"5m": 1.0,  "15m": 1.0,  "1h": 1.0,  "1d": 1.0}     # ≥ +100%
-    PCT_NEG = {"5m": -1.0, "15m": -1.0, "1h": -1.0, "1d": -1.0}    # ≤ −100%
+    PCT_POS = {"5m": 0.10,  "15m": 0.10,  "1h": 0.10,  "1d": 0.10}     # ≥ +100%
+    PCT_NEG = {"5m": -0.10, "15m": -0.10, "1h": -0.10, "1d": -0.10}    # ≤ −100%
 
     # RelVol (z) — mismo umbral ± para todas las TF (ajustable)
-    REL_POS = {"5m": 1.0,  "15m": 1.0,  "1h": 1.0,  "1d": 1.0}
-    REL_NEG = {"5m": -1.0, "15m": -1.0, "1h": -1.0, "1d": -1.0}
+    REL_POS = {"5m": 0.10,  "15m": 0.10,  "1h": 0.10,  "1d": 0.10}
+    REL_NEG = {"5m": -0.10, "15m": -0.10, "1h": -0.10, "1d": -0.10}
 
     def add_fmt_condicional_OSWAA(documento, hoja_objetivo, total_rows):
         """Colores en O/S/W/AA según Δ% + RelVol AG..AJ."""
