@@ -609,13 +609,13 @@ def procesar_autorizados_throttled(accesos_doc, main_file_url):
 # ========= Actualización de una hoja objetivo (anti-429) =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     try:
-    ws = _retry(lambda: doc.worksheet(sheet_title))
-except WorksheetNotFound:
-    ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=27))
+        ws = _retry(lambda: doc.worksheet(sheet_title))
+    except WorksheetNotFound:
+        ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=27))
 
-ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
+    ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
-ny = now_ny_base or _now_ny()
+    ny = now_ny_base or _now_ny()
     fecha_txt = f"{ny:%Y-%m-%d}"
     hora_txt = ny.strftime("%H:%M:%S")
     print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1}) — NY {fecha_txt} {hora_txt}")
