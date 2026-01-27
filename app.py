@@ -737,6 +737,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             T, U, V, W,
             X, Y, Z, AA
         ])
+    hay_corte = (
+        _es_corte_5m(ny)
+        or _es_corte_15m(ny)
+        or _es_corte_1hConVentana(ny)
+        or actualiza_d0800
+        or actualiza_d1550
+    )
 
     if tabla:
         _retry(lambda: ws.batch_clear(["A3:AA2000"]))
