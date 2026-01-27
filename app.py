@@ -78,7 +78,7 @@ REL_MIN_LEN = {
 REL_LEN = max(REL_MIN_LEN.values())  # deques guardan (última + base) => maxlen = REL_LEN + 1
 
 # Umbral único para señal en las 4 columnas AB..AE
-REL_THRESH = {"5m": 0.0, "15m": 0.0, "1h": 0.0, "1d": 0.0}
+REL_THRESH = {"5m": 2.49, "15m": 1.99, "1h": 1.49, "1d": 0.99}
 
 def _min_len(tf_key: str) -> int:
     return int(REL_MIN_LEN.get(tf_key, 10))
@@ -1450,20 +1450,19 @@ def actualizar_hoja(hoja_objetivo, posicion_fecha):
         # Z-scores numéricos (última vela CERRADA) y dirección
         z5  = float(zvals["5m"]);   z15 = float(zvals["15m"]);   z1 = float(zvals["1h"]);   zD = float(zvals["1d"])
 
-        # --- Helper: token solo numérico (±), filtra por |z| >= umbral ---
-        def _tok(rel, thr):
+        # --- Helper: token con signo + flecha, filtra por |z| >= umbral ---
+        def _tok(rel, thr, is_calls):
             rel = float(rel)
             if abs(rel) < float(thr):
                 return "•"
-            # negativo con signo "−", positivo sin "+" y con coma decimal
-            return f"{rel:.2f}".replace('.', ',')
+            flecha = "▲" if (is_calls is True) else ("▼" if (is_calls is False) else "")
+            return f"{flecha} {rel:+.2f}".replace('.', ',')  # ej: "▲ +2,03" | "▼ -1,62"
 
-        # --- Tokens listos para AB..AE (texto) usando solo el z con signo ---
-        tAB = _tok(z5,  REL_THRESH["5m"])
-        tAC = _tok(z15, REL_THRESH["15m"])
-        tAD = _tok(z1,  REL_THRESH["1h"])
-        tAE = _tok(zD,  REL_THRESH["1d"])
-
+        # --- Tokens listos para AB..AE (texto) usando z crudos + dirección de la vela ---
+        tAB = _tok(z5,  REL_THRESH["5m"],  d5)
+        tAC = _tok(z15, REL_THRESH["15m"], d15)
+        tAD = _tok(z1,  REL_THRESH["1h"],  d1)
+        tAE = _tok(zD,  REL_THRESH["1d"],  dD)
 
         # RUN_TS_NY (AF)
         run_ts = now_ny().strftime("%Y-%m-%d %H:%M:%S")
@@ -1636,12 +1635,12 @@ def actualizar_hoja(hoja_objetivo, posicion_fecha):
         return str(v).replace('.', ',')
 
     # Δ% (O, S, W, AA). Ajusta en vivo:
-    PCT_POS = {"5m": 0.10,  "15m": 0.10,  "1h": 0.10,  "1d": 0.10}     # ≥ +100%
-    PCT_NEG = {"5m": -0.10, "15m": -0.10, "1h": -0.10, "1d": -0.10}    # ≤ −100%
+    PCT_POS = {"5m": 1.00,  "15m": 1.00,  "1h": 1.00,  "1d": 1.00}     # ≥ +100%
+    PCT_NEG = {"5m": -1.00, "15m": -1.00, "1h": -1.00, "1d": -1.00}    # ≤ −100%
 
     # RelVol (z) — mismo umbral ± para todas las TF (ajustable)
-    REL_POS = {"5m": 0.10,  "15m": 0.10,  "1h": 0.10,  "1d": 0.10}
-    REL_NEG = {"5m": -0.10, "15m": -0.10, "1h": -0.10, "1d": -0.10}
+    REL_POS = {"5m": 2.50,  "15m": 2.00,  "1h": 1.50,  "1d": 1.00}
+    REL_NEG = {"5m": -2.50, "15m": -2.00, "1h": -1.50, "1d": -1.00}
 
     def add_fmt_condicional_OSWAA(documento, hoja_objetivo, total_rows):
         """Colores en O/S/W/AA según Δ% + RelVol AG..AJ."""
