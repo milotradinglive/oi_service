@@ -688,96 +688,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     ]]
     end_a1 = rowcol_to_a1(2, len(encabezado[0]))
     _update_values(ws, f"A2:{end_a1}", encabezado)
-    # ========= PARCHE ...
-
-    # ========= PARCHE (Milo) — SNAP primero, tabla después (evita “actualiza al minuto siguiente”) =========
-    # Esto fuerza a que los SNAP se escriban ANTES de que la tabla haga BUSCARV, evitando delay.
-
-    # ====== SNAPSHOTS (solo escrituras, usando cache) — PRIMERO ======
-    n_map = {}
-    for tk in filas_sorted:
-        m_call = agg[tk]["CALL"][0]
-        m_put  = agg[tk]["PUT"][0]
-        n_map[tk] = round(m_call - m_put, 1)
-
-    ts = ny.strftime("%Y-%m-%d %H:%M:%S")
-
-    # 5m — siempre
-    data_5m = [["Ticker","N_prev","N_curr","ts"]]
-    for tk in sorted(n_map.keys()):
-        n_prev = cache_5m.get(tk, "")
-        n_curr = n_map[tk]
-        data_5m.append([tk, n_prev, n_curr, ts])
-        cache_5m[tk] = n_curr
-    _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
-    _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
-
-    # 15m — cortes :00/:15/:30/:45
-    if _es_corte_15m(ny):
-        data_15 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_prev = cache_15m.get(tk, "")
-            n_curr = n_map[tk]
-            data_15.append([tk, n_prev, n_curr, ts])
-            cache_15m[tk] = n_curr
-        _retry(lambda: ws_snap15.batch_clear(["A2:D10000"]))
-        _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
-
-    # --- Ventana de gracia para snapshot 1h (solo 1 vez por hora) ---
-    def _es_corte_1hConVentana(dt=None, ventana_min=3):
-        nyx = dt or _now_ny()
-        return nyx.minute < ventana_min  # true de :00 a :02 NY
-
-    def _floor_hour(dt):
-        return dt.replace(minute=0, second=0, microsecond=0)
-
-    def _should_run_h1_once(ws_meta_local, ny_now, scope_key: str):
-        key = f"last_h1_hour_iso__{scope_key}"  # clave por hoja
-        last_iso = _meta_read(ws_meta_local, key, "")
-        current_hour = _floor_hour(ny_now).isoformat()
-        if last_iso == current_hour:
-            return False
-        _meta_write(ws_meta_local, key, current_hour)
-        return True
-
-    ws_meta_local = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
-
-    if _es_corte_1hConVentana(ny, ventana_min=3) and _should_run_h1_once(ws_meta_local, ny, sheet_title):
-        data_h1 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_curr = n_map[tk]
-            n_prev = cache_h1.get(tk, n_curr)
-            data_h1.append([tk, n_prev, n_curr, ts])
-            cache_h1[tk] = n_curr
-        _retry(lambda: ws_snap1h.batch_clear(["A2:D10000"]))
-        _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
-
-    # ======= SNAP 1d @ 08:00 NY =======
-    if actualiza_d0800 or need_seed_0800:
-        ts_now_d0800 = ny.strftime("%Y-%m-%d %H:%M:%S")
-        data_d0800 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_curr = n_map[tk]
-            n_prev = cache_d0800.get(tk, n_curr)
-            data_d0800.append([tk, n_prev, n_curr, ts_now_d0800])
-            cache_d0800[tk] = n_curr
-        _retry(lambda: ws_snap_d0800.batch_clear(["A2:D10000"]))
-        _update_values(ws_snap_d0800, f"A1:D{len(data_d0800)}", data_d0800, user_entered=False)
-
-    # ======= SNAP 1d @ 15:50 NY =======
-    if actualiza_d1550 or need_seed_1550:
-        ts_now_d1550 = ny.strftime("%Y-%m-%d %H:%M:%S")
-        data_d1550 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_curr = n_map[tk]
-            n_prev = cache_d1550.get(tk, n_curr)
-            data_d1550.append([tk, n_prev, n_curr, ts_now_d1550])
-            cache_d1550[tk] = n_curr
-        _retry(lambda: ws_snap_d1550.batch_clear(["A2:D10000"]))
-        _update_values(ws_snap_d1550, f"A1:D{len(data_d1550)}", data_d1550, user_entered=False)
-
-    # (Listo) ahora sí, la tabla que BUSCARV a SNAP se pinta con los SNAP ya frescos.
-    # ========= FIN PARCHE =========
 
     # Tabla con fórmulas (incluye Y con fallback a X y AA con vacío si Y es blanco/0)
     s5      = f"SNAP_5min__{sheet_title}"
@@ -796,23 +706,24 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         J  = f"=H{i}"
         K  = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
 
-        L = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);\"\")"
-        M = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);\"\")"
+        L  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
+        M  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
         N  = f"=SI.ERROR(L{i}-M{i};0)"
         O = f"=LET(x;SI.ERROR(VALOR(SUSTITUIR(M{i};\".\";\",\"));\"\" );y;SI.ERROR(VALOR(SUSTITUIR(N{i};\".\";\",\"));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,5);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
-        P = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);\"\")"
-        Q = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);\"\")"
+
+        P  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
+        Q  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
         R  = f"=SI.ERROR(P{i}-Q{i};0)"
         S = f"=LET(x;SI.ERROR(VALOR(SUSTITUIR(Q{i};\".\";\",\"));\"\" );y;SI.ERROR(VALOR(SUSTITUIR(R{i};\".\";\",\"));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,5);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
 
-        T = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);\"\")"
-        U = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO); T{i})"
+        T  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
+        U  = f"=LET(_u;SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_u); T{i}; _u))"
         V  = f"=SI.ERROR(T{i}-U{i};0)"
         W = f"=LET(x;SI.ERROR(VALOR(SUSTITUIR(U{i};\".\";\",\"));\"\" );y;SI.ERROR(VALOR(SUSTITUIR(V{i};\".\";\",\"));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,5);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
 
         # ======== 1D con fallback en Y y AA en blanco si Y vacío/0 ========
-        X = f"=SI.ERROR(BUSCARV($C{i};'{sd0800}'!$A:$C;3;FALSO);\"\")"
-        Y = f"=SI.ERROR(BUSCARV($C{i};'{sd1550}'!$A:$C;3;FALSO);\"\")"
+        X  = f"=SI.ERROR(BUSCARV($C{i};'{sd0800}'!$A:$C;3;FALSO);)"   # N_curr @ 08:00
+        Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd1550}'!$A:$C;3;FALSO);)"   # N_curr @ 15:50
         Z  = f"=SI.ERROR(Y{i}-X{i};0)"                                # Δ = Y − X
         AA = f"=LET(x;SI.ERROR(VALOR(SUSTITUIR(X{i};\".\";\",\"));\"\" );y;SI.ERROR(VALOR(SUSTITUIR(Y{i};\".\";\",\"));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,5);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
 
@@ -886,6 +797,89 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             ]
         if req:
             _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
+
+    # ====== SNAPSHOTS (solo escrituras, usando cache) ======
+    n_map = {}
+    for tk in filas_sorted:
+        m_call = agg[tk]["CALL"][0]
+        m_put  = agg[tk]["PUT"][0]
+        n_map[tk] = round(m_call - m_put, 1)
+
+    ts = ny.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 5m — siempre
+    data_5m = [["Ticker","N_prev","N_curr","ts"]]
+    for tk in sorted(n_map.keys()):
+        n_prev = cache_5m.get(tk, "")
+        n_curr = n_map[tk]
+        data_5m.append([tk, n_prev, n_curr, ts])
+        cache_5m[tk] = n_curr
+    _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
+    _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
+
+    # 15m — cortes :00/:15/:30/:45
+    if _es_corte_15m(ny):
+        data_15 = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_map.keys()):
+            n_prev = cache_15m.get(tk, "")
+            n_curr = n_map[tk]
+            data_15.append([tk, n_prev, n_curr, ts])
+            cache_15m[tk] = n_curr
+        _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
+
+        # --- Ventana de gracia para snapshot 1h ---
+    def _es_corte_1hConVentana(dt=None, ventana_min=3):
+        ny = dt or _now_ny()
+        return ny.minute < ventana_min  # true de :00 a :02 NY
+
+    def _floor_hour(dt):
+        return dt.replace(minute=0, second=0, microsecond=0)
+
+    def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
+        key = f"last_h1_hour_iso__{scope_key}"  # ← clave por hoja
+        last_iso = _meta_read(ws_meta, key, "")
+        current_hour = _floor_hour(ny_now).isoformat()
+        if last_iso == current_hour:
+            return False
+        _meta_write(ws_meta, key, current_hour)
+        return True
+
+    ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
+
+    # 1h — con ventana de gracia
+    if _es_corte_1hConVentana(ny, ventana_min=3) and _should_run_h1_once(ws_meta, ny, sheet_title):
+        data_h1 = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_map.keys()):
+            n_curr = n_map[tk]
+            n_prev = cache_h1.get(tk, n_curr)
+            data_h1.append([tk, n_prev, n_curr, ts])
+            cache_h1[tk] = n_curr
+        _retry(lambda: ws_snap1h.batch_clear(["A2:D10000"]))
+        _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
+
+    # ======= SNAP 1d @ 08:00 NY =======
+    if actualiza_d0800 or need_seed_0800:
+        ts_now_d0800 = ny.strftime("%Y-%m-%d %H:%M:%S")
+        data_d0800 = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_map.keys()):
+            n_curr = n_map[tk]
+            n_prev = cache_d0800.get(tk, n_curr)   # si no hay previo, usa curr
+            data_d0800.append([tk, n_prev, n_curr, ts_now_d0800])
+            cache_d0800[tk] = n_curr
+        _retry(lambda: ws_snap_d0800.batch_clear(["A2:D10000"]))
+        _update_values(ws_snap_d0800, f"A1:D{len(data_d0800)}", data_d0800, user_entered=False)
+
+    # ======= SNAP 1d @ 15:50 NY =======
+    if actualiza_d1550 or need_seed_1550:
+        ts_now_d1550 = ny.strftime("%Y-%m-%d %H:%M:%S")
+        data_d1550 = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_map.keys()):
+            n_curr = n_map[tk]
+            n_prev = cache_d1550.get(tk, n_curr)   # si no hay previo, usa curr
+            data_d1550.append([tk, n_prev, n_curr, ts_now_d1550])
+            cache_d1550[tk] = n_curr
+        _retry(lambda: ws_snap_d1550.batch_clear(["A2:D10000"]))
+        _update_values(ws_snap_d1550, f"A1:D{len(data_d1550)}", data_d1550, user_entered=False)
     # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
 
