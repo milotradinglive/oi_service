@@ -709,23 +709,23 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         L  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
         M  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
         N  = f"=SI.ERROR(L{i}-M{i};0)"
-        O = f"=LET(a;M{i};b;N{i};x;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";a&\"\"));VALOR(SUSTITUIR(SUSTITUIR(a&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(a&\"\";\".\";\",\")));\"\" );y;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";b&\"\"));VALOR(SUSTITUIR(SUSTITUIR(b&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(b&\"\";\".\";\",\")));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,000001);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
+        O  = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
 
         P  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
         Q  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
         R  = f"=SI.ERROR(P{i}-Q{i};0)"
-        S = f"=LET(a;Q{i};b;R{i};x;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";a&\"\"));VALOR(SUSTITUIR(SUSTITUIR(a&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(a&\"\";\".\";\",\")));\"\" );y;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";b&\"\"));VALOR(SUSTITUIR(SUSTITUIR(b&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(b&\"\";\".\";\",\")));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,000001);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
+        S  = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
 
         T  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
         U  = f"=LET(_u;SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_u); T{i}; _u))"
         V  = f"=SI.ERROR(T{i}-U{i};0)"
-        W = f"=LET(a;U{i};b;V{i};x;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";a&\"\"));VALOR(SUSTITUIR(SUSTITUIR(a&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(a&\"\";\".\";\",\")));\"\" );y;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";b&\"\"));VALOR(SUSTITUIR(SUSTITUIR(b&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(b&\"\";\".\";\",\")));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,000001);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
+        W  = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
 
         # ======== 1D con fallback en Y y AA en blanco si Y vacío/0 ========
         X  = f"=SI.ERROR(BUSCARV($C{i};'{sd0800}'!$A:$C;3;FALSO);)"   # N_curr @ 08:00
         Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd1550}'!$A:$C;3;FALSO);)"   # N_curr @ 15:50
         Z  = f"=SI.ERROR(Y{i}-X{i};0)"                                # Δ = Y − X
-        AA = f"=LET(a;X{i};b;Y{i};x;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";a&\"\"));VALOR(SUSTITUIR(SUSTITUIR(a&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(a&\"\";\".\";\",\")));\"\" );y;SI.ERROR(SI(ESNUMERO(ENCONTRAR(\"%\";b&\"\"));VALOR(SUSTITUIR(SUSTITUIR(b&\"\";\".\";\",\");\"%\";\"\"))/100;VALOR(SUSTITUIR(b&\"\";\".\";\",\")));\"\" );SI(O(x=\"\";y=\"\";ABS(x)<0,000001);\"\";SI.ERROR((y-x)/ABS(x);\"\")))"
+        AA = f"=SI( O(ESBLANCO(X{i}); ABS(X{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(X{i});0) )"  # % = Δ/|X|
 
         tabla.append([
             agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
@@ -830,7 +830,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         # --- Ventana de gracia para snapshot 1h ---
     def _es_corte_1hConVentana(dt=None, ventana_min=3):
         ny = dt or _now_ny()
-        return ny.minute < ventana_min  # true de :00 a :02 NY
+        return ny.minute == 0
 
     def _floor_hour(dt):
         return dt.replace(minute=0, second=0, microsecond=0)
