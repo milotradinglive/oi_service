@@ -671,7 +671,7 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     """
     key = f"cf_inflow_v1__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
-        return
+        print(f"🎨 CF ya existe en {sheet_title}, reaplicando solo colores")
 
     sheet_id = ws.id
     verde = {"red": 1.95, "green": 0.95, "blue": 0.95}   # verde más fuerte
