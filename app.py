@@ -1,7 +1,6 @@
 # ========= Actualización de una hoja objetivo (anti-429) =========
-# ⬆️ (ESTA es la “línea antes”. Reemplaza TODO lo que tengas debajo de esta línea
+# ⬆️ Reemplaza TODO lo que tengas debajo de esta línea
 #    hasta antes de:  # ========= Runner de UNA corrida =========
-#    por el bloque completo de abajo)
 
 def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     """
@@ -29,7 +28,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         sheet_title=sheet_title
     )
 
-    # 2) Aplicar CF nuevo por entrada de dinero (Δ) en N/R/V/Z
+    # 2) Aplicar CF nuevo por entrada de dinero (Δ) en N/R/V/Z (solo 1 vez)
     _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta)
 
     # 3) Tiempo base
@@ -191,7 +190,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _retry(lambda: ws.batch_clear(["A3:AA2000"]))
         _update_values(ws, f"A3:AA{len(tabla)+2}", tabla, user_entered=True)
 
-        # Formatos %
         sheet_id = ws.id
         start_row = 2
         total_rows = len(tabla)
@@ -201,13 +199,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         for col in (7, 8, 9):
             req.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": col,
-                        "endColumnIndex": col + 1
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": col, "endColumnIndex": col + 1},
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
@@ -217,19 +210,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         for col in (14, 18, 22, 26):
             req.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row,
-                        "endRowIndex": start_row + total_rows,
-                        "startColumnIndex": col,
-                        "endColumnIndex": col + 1
-                    },
+                    "range": {"sheetId": sheet_id, "startRowIndex": start_row, "endRowIndex": start_row + total_rows,
+                              "startColumnIndex": col, "endColumnIndex": col + 1},
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}}},
                     "fields": "userEnteredFormat.numberFormat"
                 }
             })
 
-        # Colores por K y cambios en H/I
         verde = {"red": 0.80, "green": 1.00, "blue": 0.80}
         rojo = {"red": 1.00, "green": 0.80, "blue": 0.80}
         amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
@@ -244,16 +231,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             if ch_L:
                 bg_k = amarillo
 
-            # K (col 10 0-index)
             req.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row + idx,
-                        "endRowIndex": start_row + idx + 1,
-                        "startColumnIndex": 10,
-                        "endColumnIndex": 11
-                    },
+                    "range": {"sheetId": sheet_id,
+                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                              "startColumnIndex": 10, "endColumnIndex": 11},
                     "cell": {"userEnteredFormat": {"backgroundColor": bg_k}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
@@ -262,29 +244,20 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             bg_h = amarillo if ch_oi else blanco
             bg_i = amarillo if ch_vol else blanco
 
-            # H (col 7) e I (col 8)
             req.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row + idx,
-                        "endRowIndex": start_row + idx + 1,
-                        "startColumnIndex": 7,
-                        "endColumnIndex": 8
-                    },
+                    "range": {"sheetId": sheet_id,
+                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                              "startColumnIndex": 7, "endColumnIndex": 8},
                     "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
             })
             req.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row + idx,
-                        "endRowIndex": start_row + idx + 1,
-                        "startColumnIndex": 8,
-                        "endColumnIndex": 9
-                    },
+                    "range": {"sheetId": sheet_id,
+                              "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
+                              "startColumnIndex": 8, "endColumnIndex": 9},
                     "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
                     "fields": "userEnteredFormat.backgroundColor"
                 }
@@ -357,10 +330,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _retry(lambda: ws_snap_d1550.batch_clear(["A2:D10000"]))
         _update_values(ws_snap_d1550, f"A1:D{len(data_d1550)}", data_d1550, user_entered=False)
 
-    # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
-
-    # Retorno mapeo K
     return {tk: estado_nuevo[tk][2] for tk in filas_sorted}
 
 
