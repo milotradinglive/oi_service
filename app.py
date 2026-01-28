@@ -669,13 +669,13 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     N(5m), R(15m), V(1h), Z(día).
     Verde si >= umbral, Rojo si <= -umbral.
     """
-    key = f"cf_inflow_v2__{sheet_title}"
+    key = f"cf_inflow_v3__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
         return
 
     sheet_id = ws.id
-    verde = {"red": 0.80, "green": 1.00, "blue": 0.80}
-    rojo  = {"red": 1.00, "green": 0.80, "blue": 0.80}
+    verde = {"red": 0.35, "green": 0.85, "blue": 0.35}   # VERDE fuerte (dinero entrando)
+    rojo  = {"red": 0.90, "green": 0.35, "blue": 0.35}   # ROJO fuerte (dinero saliendo)
 
     start_row = 2
     end_row = 2000
