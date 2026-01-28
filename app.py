@@ -143,6 +143,7 @@ def _update_values(ws, range_name, values, user_entered=True):
     opt = "USER_ENTERED" if user_entered else "RAW"
     _retry(lambda: ws.update(range_name=range_name, values=values, value_input_option=opt))
     time.sleep(0.3)
+    
 def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sheet_title):
     """
     Milo — Borra reglas de Conditional Formatting SOLO en columnas específicas (0-index),
@@ -560,8 +561,8 @@ def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=
 def _revoke_by_id(perm_id: str):
     drive.permissions().delete(fileId=MAIN_FILE_ID, permissionId=perm_id).execute()
 
-def procesar_autorizados_throttled(accesos_doc, main_file_url):
-    ws_meta = _ensure_sheet_generic(client.open_by_key(MAIN_FILE_ID), "META", rows=50, cols=2)
+def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
+    ws_meta = _ensure_sheet_generic(doc_main, "META", rows=50, cols=2)
     last = _meta_read(ws_meta, "last_accesses_check_iso", "")
     now = datetime.utcnow()
     should = True
@@ -724,13 +725,16 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
 
     _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
     _meta_write(ws_meta, key, "1")
+    
 def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     try:
         ws = _retry(lambda: doc.worksheet(sheet_title))
     except WorksheetNotFound:
         ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=27))
+
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
-        # 1) Limpiar SOLO CF viejo de % (O,S,W,AA) — 1 sola vez por hoja
+
+    # 1) Limpiar SOLO CF viejo de % (O,S,W,AA) — 1 sola vez por hoja
     _reset_cf_for_columns(
         ws,
         start_row_idx=2,
@@ -1038,7 +1042,7 @@ def run_once(skip_oi: bool = False):
         except Exception:
             pass
 
-    acc = procesar_autorizados_throttled(accesos, main_url)
+    acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
 
     return {
         "ok": True,
