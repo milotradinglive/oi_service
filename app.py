@@ -1137,8 +1137,8 @@ def http_apply_access():
         print("➡️ [/apply_access] inicio", flush=True)
         accesos = client.open_by_key(ACCESS_FILE_ID)
         main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
-        acc = procesar_autorizados_throttled(accesos, main_url)
-        print(f"✅ [/apply_access] ok: {acc}", flush=True)
+        doc_main = client.open_by_key(MAIN_FILE_ID)
+        acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
         return jsonify({"ok": True, **acc}), 200
     finally:
         fcntl.flock(file_lock, fcntl.LOCK_UN); file_lock.close()
