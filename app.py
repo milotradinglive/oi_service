@@ -615,6 +615,84 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
+    # limpiar señales viejas de % (O,S,W,AA)
+    _reset_cf_for_columns(
+        ws,
+        start_row_idx=2,
+        end_row_idx=2000,
+        cols_0idx=[14, 18, 22, 26],
+        ws_meta=ws_meta,
+        sheet_title=sheet_title
+    )
+
+    # aplicar señales nuevas por entrada de dinero (Δ): N/R/V/Z
+    _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta)
+
+    ny = now_ny_base or _now_ny()
+    fecha_txt = f"{ny:%Y-%m-%d}"
+    hora_txt = ny.strftime("%H:%M:%S")
+    print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1}) — NY {fecha_txt} {hora_txt}")
+
+    # --- y AQUÍ sigue TODO tu bloque que ya tienes (estado, snaps, datos, etc.) ---
+def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
+    key = f"cf_inflow_v1__{sheet_title}"
+    if _meta_read(ws_meta, key, "") == "1":
+        return
+
+    sheet_id = ws.id
+    verde = {"red": 0.80, "green": 1.00, "blue": 0.80}
+    rojo  = {"red": 1.00, "green": 0.80, "blue": 0.80}
+
+    start_row = 2
+    end_row = 2000
+
+    cfg = [
+        (13, 5),   # N 5m
+        (17, 10),  # R 15m
+        (21, 15),  # V 1h
+        (25, 20),  # Z día
+    ]
+
+    req = []
+    for col0, thr in cfg:
+        rng = {
+            "sheetId": sheet_id,
+            "startRowIndex": start_row,
+            "endRowIndex": end_row,
+            "startColumnIndex": col0,
+            "endColumnIndex": col0 + 1
+        }
+
+        req.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [rng],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_GREATER_THAN_EQ",
+                                      "values": [{"userEnteredValue": str(thr)}]},
+                        "format": {"backgroundColor": verde}
+                    }
+                },
+                "index": 0
+            }
+        })
+
+        req.append({
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [rng],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_LESS_THAN_EQ",
+                                      "values": [{"userEnteredValue": str(-thr)}]},
+                        "format": {"backgroundColor": rojo}
+                    }
+                },
+                "index": 0
+            }
+        })
+
+    _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
+    _meta_write(ws_meta, key, "1")
     ny = now_ny_base or _now_ny()
     fecha_txt = f"{ny:%Y-%m-%d}"
     hora_txt = ny.strftime("%H:%M:%S")
@@ -758,7 +836,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     hay_corte = (
         _es_corte_5m(ny)
         or _es_corte_15m(ny)
-        or _es_corte_1hConVentana(ny)
+        or (_es_corte_1hConVentana(ny, 3) and _should_run_h1_once(ws_meta, ny, sheet_title))
         or actualiza_d0800
         or actualiza_d1550
     )
