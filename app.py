@@ -669,7 +669,7 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     N(5m), R(15m), V(1h), Z(día).
     Verde si >= umbral, Rojo si <= -umbral.
     """
-    key = f"cf_inflow_v1__{sheet_title}"
+    key = f"cf_inflow_v2__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
         return
 
