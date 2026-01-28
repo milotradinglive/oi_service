@@ -674,8 +674,9 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
         return
 
     sheet_id = ws.id
-    verde = {"red": 0.70, "green": 0.95, "blue": 0.70}  # verde fuerte
-    rojo  = {"red": 0.95, "green": 0.70, "blue": 0.70}  # rojo fuerte
+    verde = {"red": 0.80, "green": 1.00, "blue": 0.80}
+    rojo  = {"red": 1.00, "green": 0.80, "blue": 0.80}
+
     start_row = 2
     end_row = 2000
 
@@ -741,16 +742,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         cols_0idx=[14, 18, 22, 26],  # O, S, W, AA (0-index)
         ws_meta=ws_meta,
         sheet_title=sheet_title
-    )
-
-    # 1.1) Limpiar CF viejo de Δ (N,R,V,Z) — 1 sola vez por hoja
-    _reset_cf_for_columns(
-        ws,
-        start_row_idx=2,
-        end_row_idx=2000,
-        cols_0idx=[13, 17, 21, 25],  # N, R, V, Z (0-index)
-        ws_meta=ws_meta,
-        sheet_title=f"{sheet_title}__INFLOW"  # clave distinta
     )
 
     # 2) Aplicar CF nuevo por entrada de dinero (Δ) en N/R/V/Z — 1 sola vez por hoja
@@ -1146,8 +1137,7 @@ def http_apply_access():
         print("➡️ [/apply_access] inicio", flush=True)
         accesos = client.open_by_key(ACCESS_FILE_ID)
         main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
-        doc_main = client.open_by_key(MAIN_FILE_ID)
-        acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
+        acc = procesar_autorizados_throttled(accesos, main_url)
         print(f"✅ [/apply_access] ok: {acc}", flush=True)
         return jsonify({"ok": True, **acc}), 200
     finally:
