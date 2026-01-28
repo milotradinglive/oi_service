@@ -1042,6 +1042,7 @@ def run_once(skip_oi: bool = False):
         except Exception:
             pass
 
+    doc_main = client.open_by_key(MAIN_FILE_ID)
     acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
 
     return {
