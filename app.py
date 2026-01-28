@@ -674,8 +674,8 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
         return
 
     sheet_id = ws.id
-    verde = {"red": 0.60, "green": 0.90, "blue": 0.60}  # verde más vivo
-    rojo  = {"red": 0.95, "green": 0.60, "blue": 0.60}  # rojo más vivo
+    verde = {"red": 0.80, "green": 1.00, "blue": 0.80}
+    rojo  = {"red": 1.00, "green": 0.80, "blue": 0.80}
 
     start_row = 2
     end_row = 2000
@@ -920,9 +920,9 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                                        "fields": "userEnteredFormat.numberFormat"}})
 
         # Colores (sin “amarillo por cambio” si no lo quieres; mantengo tu lógica actual)
-        verde    = {"red": 0.60, "green": 0.90, "blue": 0.60}  # más fuerte
-        rojo     = {"red": 0.95, "green": 0.60, "blue": 0.60}  # más fuerte
-        amarillo = {"red": 1.00, "green": 0.90, "blue": 0.35}  # amarillo más fuerte (alerta)
+        verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
+        rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
+        amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
         blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
 
         for idx, row in enumerate(tabla):
