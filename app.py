@@ -663,6 +663,15 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
     return {"activados": activados, "revocados": revocados, "skipped": False}
 
 # ========= Actualización de una hoja objetivo (anti-429) =========
+# 2) Limpiar CF viejo de Δ (N,R,V,Z) — 1 sola vez por hoja
+_reset_cf_for_columns(
+    ws,
+    start_row_idx=2,
+    end_row_idx=2000,
+    cols_0idx=[13, 17, 21, 25],  # N, R, V, Z (0-index)
+    ws_meta=ws_meta,
+    sheet_title=f"{sheet_title}__INFLOW"  # 👈 clave distinta para no chocar con el reset de %
+)
 def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     """
     Milo — Señales por 'entrada de dinero' (Δ en millones) en columnas:
@@ -671,11 +680,11 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     """
     key = f"cf_inflow_v1__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
-        print(f"🎨 CF ya existe en {sheet_title}, reaplicando solo colores")
+        return
 
     sheet_id = ws.id
-    verde = {"red": 1.95, "green": 0.95, "blue": 0.95}   # verde más fuerte
-    rojo  = {"red": 1.95, "green": 0.95, "blue": 0.95}   # rojo más fuerte
+    verde = {"red": 0.70, "green": 0.95, "blue": 0.70}  # verde fuerte
+    rojo  = {"red": 0.95, "green": 0.70, "blue": 0.70}  # rojo fuerte
     start_row = 2
     end_row = 2000
 
