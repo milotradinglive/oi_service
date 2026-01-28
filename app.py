@@ -151,7 +151,7 @@ def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sh
     """
     key = f"cf_reset_pct_v1__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
-        return
+        print(f"🎨 CF ya existe en {sheet_title}, reaplicando solo colores")
 
     sheet_id = ws.id
     # Traer TODAS las reglas actuales del sheet
