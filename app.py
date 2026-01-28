@@ -674,8 +674,8 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
         return
 
     sheet_id = ws.id
-    verde = {"red": 0.95, "green": 0.85, "blue": 0.55}   # verde más fuerte
-    rojo  = {"red": 0.95, "green": 0.55, "blue": 0.55}   # rojo más fuerte
+    verde = {"red": 0.95, "green": 0.95, "blue": 0.95}   # verde más fuerte
+    rojo  = {"red": 0.95, "green": 0.95, "blue": 0.95}   # rojo más fuerte
     start_row = 2
     end_row = 2000
 
