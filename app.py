@@ -151,7 +151,7 @@ def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sh
     """
     key = f"cf_reset_pct_v1__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
-        print(f"🎨 CF ya existe en {sheet_title}, reaplicando solo colores")
+        return
 
     sheet_id = ws.id
     # Traer TODAS las reglas actuales del sheet
@@ -663,15 +663,6 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
     return {"activados": activados, "revocados": revocados, "skipped": False}
 
 # ========= Actualización de una hoja objetivo (anti-429) =========
-# 2) Limpiar CF viejo de Δ (N,R,V,Z) — 1 sola vez por hoja
-_reset_cf_for_columns(
-    ws,
-    start_row_idx=2,
-    end_row_idx=2000,
-    cols_0idx=[13, 17, 21, 25],  # N, R, V, Z (0-index)
-    ws_meta=ws_meta,
-    sheet_title=f"{sheet_title}__INFLOW"  # 👈 clave distinta para no chocar con el reset de %
-)
 def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     """
     Milo — Señales por 'entrada de dinero' (Δ en millones) en columnas:
@@ -750,6 +741,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         cols_0idx=[14, 18, 22, 26],  # O, S, W, AA (0-index)
         ws_meta=ws_meta,
         sheet_title=sheet_title
+    )
+
+    # 1.1) Limpiar CF viejo de Δ (N,R,V,Z) — 1 sola vez por hoja
+    _reset_cf_for_columns(
+        ws,
+        start_row_idx=2,
+        end_row_idx=2000,
+        cols_0idx=[13, 17, 21, 25],  # N, R, V, Z (0-index)
+        ws_meta=ws_meta,
+        sheet_title=f"{sheet_title}__INFLOW"  # clave distinta
     )
 
     # 2) Aplicar CF nuevo por entrada de dinero (Δ) en N/R/V/Z — 1 sola vez por hoja
@@ -1145,7 +1146,8 @@ def http_apply_access():
         print("➡️ [/apply_access] inicio", flush=True)
         accesos = client.open_by_key(ACCESS_FILE_ID)
         main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
-        acc = procesar_autorizados_throttled(accesos, main_url)
+        doc_main = client.open_by_key(MAIN_FILE_ID)
+        acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
         print(f"✅ [/apply_access] ok: {acc}", flush=True)
         return jsonify({"ok": True, **acc}), 200
     finally:
