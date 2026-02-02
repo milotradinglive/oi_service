@@ -258,32 +258,30 @@ def _es_corte_1553(dt=None):
     ny = dt or _now_ny()
     return ny.hour == 15 and ny.minute == 53
 
+# === Helpers diarios (08:00 / 15:50) ===
+# ---- helper: after time NY ----
+def _after_time(h, m, dt=None):
+    ny = dt or _now_ny()
+    return (ny.hour, ny.minute) >= (h, m)
+
+def _es_snap_0800(dt=None, window_s=90):
+    ny = dt or _now_ny()
+    target = ny.replace(hour=8, minute=0, second=0, microsecond=0)
+    return 0 <= (ny - target).total_seconds() < window_s
+
+def _es_snap_1550(dt=None, window_s=90):
+    ny = dt or _now_ny()
+    target = ny.replace(hour=15, minute=50, second=0, microsecond=0)
+    return 0 <= (ny - target).total_seconds() < window_s
+
 def _is_any_cut(ny):
-    """
-    True si estamos en un corte válido para ejecutar OI (5m/15m/1h ventana/diarios 08:00 y 15:50).
-    """
     return (
         _es_corte_5m(ny)
         or _es_corte_15m(ny)
         or _es_corte_1hConVentana(ny, 3)
-        or _es_snap_0800()
-        or _es_snap_1550()
+        or _es_snap_0800(ny)
+        or _es_snap_1550(ny)
     )
-# === Helpers diarios (08:00 / 15:50) ===
-def _es_snap_0800(window_s=90):
-    ny = _now_ny()
-    target = ny.replace(hour=8, minute=0, second=0, microsecond=0)
-    return 0 <= (ny - target).total_seconds() < window_s
-
-def _es_snap_1550(window_s=90):
-    ny = _now_ny()
-    target = ny.replace(hour=15, minute=50, second=0, microsecond=0)
-    return 0 <= (ny - target).total_seconds() < window_s
-
-def _after_time(h, m, grace_min=2):
-    ny = _now_ny()
-    t  = ny.replace(hour=h, minute=m, second=0, microsecond=0)
-    return ny >= (t + timedelta(minutes=grace_min))
 
 # Memo de snapshots diarios realizados hoy (por hoja)
 DAILY_SNAP_DONE = {}  # {(sheet_title, 'YYYY-MM-DD'): True}
@@ -805,11 +803,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     cache_d0800 = _get_cache_for(ws_snap_d0800)
     cache_d1550 = _get_cache_for(ws_snap_d1550)
 
-    actualiza_d0800 = _es_snap_0800()    # 08:00 NY (ventana ~90s)
-    actualiza_d1550 = _es_snap_1550()    # 15:50 NY (ventana ~90s)
+    actualiza_d0800 = _es_snap_0800(ny)
+    actualiza_d1550 = _es_snap_1550(ny)
 
-    need_seed_0800 = _after_time(8, 0)   and not _daily_snapshot_done_today(ws_snap_d0800)
-    need_seed_1550 = _after_time(15, 50) and not _daily_snapshot_done_today(ws_snap_d1550)
+    need_seed_0800 = _after_time(8, 0, ny)   and not _daily_snapshot_done_today(ws_snap_d0800)
+    need_seed_1550 = _after_time(15, 50, ny) and not _daily_snapshot_done_today(ws_snap_d1550)
 
     # ===== Semilla diaria (para que Y no venga en blanco al inicio del día) =====
    
@@ -829,40 +827,41 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-# ========= Métricas por ticker y estado (CORREGIDO) =========
-stats = {}
+    # ========= Métricas por ticker y estado =========
+    stats = {}
 
-for tk in agg.keys():
-    m_call, v_call = agg[tk]["CALL"]
-    m_put,  v_put  = agg[tk]["PUT"]
+    for tk in agg.keys():
+        m_call, v_call = agg[tk]["CALL"]
+        m_put,  v_put  = agg[tk]["PUT"]
 
-    val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
-    val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
+        val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
+        val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
 
-    clasif = _clasificar_filtro_institucional(val_h_num, val_i_num)
+        clasif = _clasificar_filtro_institucional(val_h_num, val_i_num)
 
-    color_oi  = "🟢" if val_h_num > 0 else "🔴" if val_h_num < 0 else "⚪"
-    color_vol = "🟢" if val_i_num > 0 else "🔴" if val_i_num < 0 else "⚪"
+        color_oi  = "🟢" if val_h_num > 0 else "🔴" if val_h_num < 0 else "⚪"
+        color_vol = "🟢" if val_i_num > 0 else "🔴" if val_i_num < 0 else "⚪"
 
-    prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
-    cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
-    cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
+        prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
 
-    es_alineado = clasif in ("CALLS", "PUTS")
-    cambio_L = es_alineado and (clasif != prev_l)
+        cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
+        cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
 
-    cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
-    estado_nuevo[tk] = (color_oi, color_vol, clasif, val_h_num, val_i_num)
+        es_alineado = clasif in ("CALLS", "PUTS")
+        cambio_L = es_alineado and (clasif != prev_l)
 
-    stats[tk] = {
-        "m_call": m_call, "m_put": m_put,
-        "v_call": v_call, "v_put": v_put,
-        "val_h": val_h_num, "val_i": val_i_num,
-        "clasif": clasif,
-    }
+        cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
+        estado_nuevo[tk] = (color_oi, color_vol, clasif, val_h_num, val_i_num)
 
-# ✅ ahora sí: ordenar UNA sola vez
-filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
+        stats[tk] = {
+            "m_call": m_call, "m_put": m_put,
+            "v_call": v_call, "v_put": v_put,
+            "val_h": val_h_num, "val_i": val_i_num,
+            "clasif": clasif,
+        }
+
+    # Ordenar UNA sola vez
+    filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
     # Encabezado — UNA sola vez
     from gspread.utils import rowcol_to_a1
