@@ -809,7 +809,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     need_seed_0800 = _after_time(8, 0, ny)   and not _daily_snapshot_done_today(ws_snap_d0800)
     need_seed_1550 = _after_time(15, 50, ny) and not _daily_snapshot_done_today(ws_snap_d1550)
 
-    # ===== Semilla diaria (para que Y no venga en blanco al inicio del día) =====
+# ===== Recolección base (snapshots diarios se manejan abajo) =====
    
     # Recolecta datos
     datos = []
@@ -930,6 +930,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         or (_es_corte_1hConVentana(ny, 3) and _should_run_h1_once(ws_meta, ny, sheet_title))
         or actualiza_d0800
         or actualiza_d1550
+        or need_seed_0800
+        or need_seed_1550
     )
 
     if hay_corte and tabla:
