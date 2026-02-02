@@ -33,7 +33,15 @@ from gspread.exceptions import WorksheetNotFound, APIError as GAPIError
 app = Flask(__name__)
 OI_SECRET = os.getenv("OI_SECRET", "").strip()
 APP_VERSION = os.getenv("RENDER_GIT_COMMIT", "")[:7] or "dev"
-print(f"🚀 Iniciando oi-updater versión {APP_VERSION}", flush=True)
+# ========= Logging (simple) =========
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+_LEVELS = {"ERROR": 40, "WARN": 30, "WARNING": 30, "INFO": 20, "DEBUG": 10}
+
+def log(msg: str, level: str = "INFO"):
+    if _LEVELS.get(level, 20) >= _LEVELS.get(LOG_LEVEL, 20):
+        print(f"[{level}] {msg}", flush=True)
+
+log(f"oi-updater v{APP_VERSION} | LOG_LEVEL={LOG_LEVEL}", "INFO")
 
 @app.get("/")
 def root():
@@ -89,7 +97,7 @@ def get_json(url, params=None, max_retries=5):
             r = session.get(url, params=params, timeout=TIMEOUT)
             if r.status_code == 429:
                 espera = 2 * intento
-                print(f"⏳ 429 rate limit Tradier. Reintentando en {espera}s…")
+                log(f"Tradier 429. retry in {espera}s", "WARN")
                 time.sleep(espera)
                 continue
             r.raise_for_status()
@@ -98,7 +106,7 @@ def get_json(url, params=None, max_retries=5):
             if intento == max_retries:
                 raise
             espera = 1.5 * intento
-            print(f"⚠️ Error {e}. Reintento {intento}/{max_retries} en {espera:.1f}s")
+            log(f"Tradier error: {e} | retry {intento}/{max_retries} in {espera:.1f}s", "WARN")
             time.sleep(espera)
 
 # ========= Backoff + Rate limiter LECTURAS Sheets =========
@@ -776,7 +784,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     ny = now_ny_base or _now_ny()
     fecha_txt = f"{ny:%Y-%m-%d}"
     hora_txt = ny.strftime("%H:%M:%S")
-    print(f"⏳ Actualizando: {sheet_title} (venc. #{posicion_fecha+1}) — NY {fecha_txt} {hora_txt}")
+    log(f"Actualizando: {sheet_title} (vto #{posicion_fecha+1}) NY {fecha_txt} {hora_txt}", "INFO")
 
     # Estado previo
     nombre_estado = f"ESTADO__{sheet_title}"
@@ -828,7 +836,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         m_put,  v_put  = agg[tk]["PUT"]
         val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
         val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
-        clasif = _clasificar_filtro_institucional(val_h_num, val_i_num)
+        estado_nuevo[tk] = (color_oi, color_vol, "", val_h_num, val_i_num)
 
         prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
         color_oi  = "🟢" if val_h_num > 0 else "🔴" if val_h_num < 0 else "⚪"
@@ -856,7 +864,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         "Trade Cnt VERDE","Trade Cnt ROJO",
         "VOLUMEN ENTRA","VOLUMEN SALE",
         "TENDENCIA Trade Cnt.","VOLUMEN.",
-        "Fuerza","Filtro institucional",
         "N (5m SNAP)","O (5m SNAP)","5m","5m %",
         "N (15m SNAP)","O (15m SNAP)","15m","15m %",
         "N (1h SNAP)","O (1h SNAP)","1h","1h %",
@@ -879,8 +886,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
         H  = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
         I  = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
-        J  = f"=H{i}"
-        K  = f"=SI(Y(H{i}>0,5; I{i}>0,4);\"CALLS\";SI(Y(H{i}<0; I{i}<0);\"PUTS\";\"\") )"
 
         L  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
         M  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
@@ -907,7 +912,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
-            H, I, J, K,
+            H, I,
             L, M, N, O,
             P, Q, R, S,
             T, U, V, W,
@@ -931,7 +936,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         total_rows = len(tabla)
         req = []
         # H, I, J -> 0.0%
-        for col in (7, 8, 9):
+        # H, I -> 0.0%
+        for col in (7, 8):
             req.append({"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
                                                  "endRowIndex": start_row + total_rows,
                                                  "startColumnIndex": col, "endColumnIndex": col+1},
@@ -955,14 +961,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             tk = str(row[2]).strip().upper()
             ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
             clasif = estado_nuevo[tk][2]
-
-            bg_k = verde if clasif=="CALLS" else rojo if clasif=="PUTS" else blanco
-            if ch_L: bg_k = amarillo
-            req.append({"repeatCell": {"range": {"sheetId": sheet_id,
-                                                 "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                                 "startColumnIndex": 10, "endColumnIndex": 11},
-                                       "cell": {"userEnteredFormat": {"backgroundColor": bg_k}},
-                                       "fields": "userEnteredFormat.backgroundColor"}})
 
             bg_h = amarillo if ch_oi else blanco
             bg_i = amarillo if ch_vol else blanco
@@ -1000,8 +998,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             cache_5m[tk] = n_curr
         _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
         _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
-    else:
-        print(f"⏭️ SNAP 5m omitido (NY {ny:%H:%M:%S}) — no es múltiplo de 5.", flush=True)
 
     # 15m — cortes :00/:15/:30/:45
     if _es_corte_15m(ny):
@@ -1052,8 +1048,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     _escribir_estado(ws_estado, estado_nuevo)
 
     # Retorno mapeo K
-    return {tk: estado_nuevo[tk][2] for tk in filas_sorted}
-
+    return {tk: "" for tk in filas_sorted}
 
 # ========= Runner de UNA corrida =========
 def run_once(skip_oi: bool = False):
@@ -1113,19 +1108,19 @@ def _authorized(req: request) -> bool:
 def _run_guarded():
     file_lock = _acquire_lock()
     if not file_lock:
-        print("⏳ [/update] Ya hay una ejecución en curso (lock inter-proceso); se omite.", flush=True)
+        log("/update skipped: already running (lock)", "WARN")
         return
     try:
-        print("🚀 [update] Inicio actualización OI", flush=True)
+        log("[update] start", "INFO")
         run_once()
-        print("✅ [update] Fin actualización OI", flush=True)
+        log("[update] done", "INFO")
     except Exception as e:
-        print(f"❌ [/update] Error: {repr(e)}", flush=True)
+        log(f"[update] error: {repr(e)}", "ERROR")
         traceback.print_exc()
     finally:
         fcntl.flock(file_lock, fcntl.LOCK_UN)
         file_lock.close()
-        print(f"🟣 [/update] Hilo terminado @ {datetime.utcnow().isoformat()}Z", flush=True)
+        log(f"[update] thread end @ {datetime.utcnow().isoformat()}Z", "DEBUG")
 
 @app.get("/healthz")
 def healthz():
