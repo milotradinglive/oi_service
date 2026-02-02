@@ -322,6 +322,9 @@ def _is_any_cut(ny):
 # Memo de snapshots diarios realizados hoy (por hoja)
 DAILY_SNAP_DONE = {}  # {(sheet_title, 'YYYY-MM-DD'): True}
 
+# Memo: cuántas filas escribimos la última vez en cada hoja ESTADO__
+ESTADO_LAST_ROWS = {}  # {ws_title: last_rows_written}
+
 def _daily_snapshot_done_today(ws_snap):
     hoy = _now_ny().strftime("%Y-%m-%d")
     key = (ws_snap.title, hoy)
@@ -1212,7 +1215,6 @@ def update():
 def http_run():
     try:
         skip = request.args.get("skip_oi", "").strip().lower() in ("1", "true", "yes")
-        print(f"➡️ [/run] inicio (skip_oi={skip})", flush=True)
         force = request.args.get("force_write", "").strip().lower() in ("1", "true", "yes")
         print(f"➡️ [/run] inicio (skip_oi={skip}, force_write={force})", flush=True)
         file_lock = _acquire_lock()
