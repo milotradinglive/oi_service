@@ -270,10 +270,6 @@ def _es_corte_15m(dt=None):
     ny = dt or _now_ny()
     return (ny.minute % 15) == 0
 
-def _es_corte_1h(dt=None):
-    ny = dt or _now_ny()
-    return ny.minute == 0
-
 def _es_corte_1hConVentana(dt=None, ventana_min=3):
     ny = dt or _now_ny()
     return ny.minute < ventana_min  # true de :00 a :02 NY
@@ -289,10 +285,6 @@ def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
         return False
     _meta_write(ws_meta, key, current_hour)
     return True
-
-def _es_corte_1553(dt=None):
-    ny = dt or _now_ny()
-    return ny.hour == 15 and ny.minute == 53
 
 # === Helpers diarios (08:00 / 15:50) ===
 # ---- helper: after time NY ----
@@ -413,7 +405,6 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
     return ""
 
 # ========= Expiraciones y OI/dinero =========
-from datetime import datetime as _dt, timedelta as _td
 def elegir_expiracion_viernes(expiraciones, posicion_fecha):
     hoy = _dt.now().date()
     dias_a_viernes = (4 - hoy.weekday()) % 7
@@ -656,8 +647,6 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
     hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
     
     # ========= batch writer para AUTORIZADOS (evita update_cell en loop) =========
-    from gspread.utils import rowcol_to_a1
-
     pending = []  # [{"range":"A2","values":[["x"]]}, ...]
 
     def _set_cell(r, c, v):
@@ -957,7 +946,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
     # Encabezado — UNA sola vez
-    from gspread.utils import rowcol_to_a1
     encabezado = [[
         "Fecha","Hora","Ticker",
         "Trade Cnt VERDE","Trade Cnt ROJO",
@@ -987,40 +975,45 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         m_call = stats[tk]["m_call"]; m_put = stats[tk]["m_put"]
         v_call = stats[tk]["v_call"]; v_put = stats[tk]["v_put"]
 
-        H  = f"=SI.ERROR((D{i}-E{i})/MAX(D{i};E{i});0)"
-        I  = f"=SI.ERROR((F{i}-G{i})/MAX(F{i};G{i});0)"
+        H = f"=SI.ERROR(({A1(i,'D_m_call')}-{A1(i,'E_m_put')})/MAX({A1(i,'D_m_call')};{A1(i,'E_m_put')});0)"
+        I = f"=SI.ERROR(({A1(i,'F_v_call')}-{A1(i,'G_v_put')})/MAX({A1(i,'F_v_call')};{A1(i,'G_v_put')});0)"
 
-        L  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$C;3;FALSO);)"
-        M  = f"=SI.ERROR(BUSCARV($C{i};'{s5}'!$A:$B;2;FALSO);)"
-        N  = f"=SI.ERROR(L{i}-M{i};0)"
-        O  = f"=SI.ERROR(N{i}/MAX(ABS(M{i});0,000001);0)"
+        # 5m
+        J = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s5}'!$A:$C;3;FALSO);)"
+        K = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s5}'!$A:$B;2;FALSO);)"
+        L = f"=SI.ERROR({A1(i,'J_5m_curr')}-{A1(i,'K_5m_prev')};0)"
+        M = f"=SI.ERROR({A1(i,'L_5m_delta')}/MAX(ABS({A1(i,'K_5m_prev')});0,000001);0)"
 
-        P  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$C;3;FALSO);)"
-        Q  = f"=SI.ERROR(BUSCARV($C{i};'{s15}'!$A:$B;2;FALSO);)"
-        R  = f"=SI.ERROR(P{i}-Q{i};0)"
-        S  = f"=SI.ERROR(R{i}/MAX(ABS(Q{i});0,000001);0)"
+        # 15m
+        N = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s15}'!$A:$C;3;FALSO);)"
+        O = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s15}'!$A:$B;2;FALSO);)"
+        P = f"=SI.ERROR({A1(i,'N_15m_curr')}-{A1(i,'O_15m_prev')};0)"
+        Q = f"=SI.ERROR({A1(i,'P_15m_delta')}/MAX(ABS({A1(i,'O_15m_prev')});0,000001);0)"
 
-        T  = f"=SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$C;3;FALSO);)"
-        U  = f"=LET(_u;SI.ERROR(BUSCARV($C{i};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_u); T{i}; _u))"
-        V  = f"=SI.ERROR(T{i}-U{i};0)"
-        W  = f"=SI.ERROR(V{i}/MAX(ABS(U{i});0,000001);0)"
+        # 1h
+        R = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s1h}'!$A:$C;3;FALSO);)"
+        # fallback prev: si prev está en blanco, usa curr
+        S = f"=LET(_p;SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);{A1(i,'R_1h_curr')};_p))"
+        T = f"=SI.ERROR({A1(i,'R_1h_curr')}-{A1(i,'S_1h_prev')};0)"
+        U = f"=SI.ERROR({A1(i,'T_1h_delta')}/MAX(ABS({A1(i,'S_1h_prev')});0,000001);0)"
 
-        # ======== 1D con fallback en Y y AA en blanco si Y vacío/0 ========
-        X  = f"=SI.ERROR(BUSCARV($C{i};'{sd0800}'!$A:$C;3;FALSO);)"   # N_curr @ 08:00
-        Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd1550}'!$A:$C;3;FALSO);)"   # N_curr @ 15:50
-        Z  = f"=SI.ERROR(Y{i}-X{i};0)"                                # Δ = Y − X
-        AA = f"=SI( O(ESBLANCO(Y{i}); ABS(Y{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(Y{i});0) )"
+        # día
+        V = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{sd0800}'!$A:$C;3;FALSO);)"
+        W = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{sd1550}'!$A:$C;3;FALSO);)"
+        X = f"=SI.ERROR({A1(i,'W_d1550')}-{A1(i,'V_d0800')};0)"
+        Y = f"=SI(O(ESBLANCO({A1(i,'W_d1550')});ABS({A1(i,'W_d1550')})=0);\"\";SI.ERROR({A1(i,'X_d_delta')}/ABS({A1(i,'W_d1550')});0))"
 
         tabla.append([
             agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
             fmt_millones(m_call), fmt_millones(m_put),
             fmt_entero_miles(v_call), fmt_entero_miles(v_put),
             H, I,
-            L, M, N, O,
-            P, Q, R, S,
-            T, U, V, W,
-            X, Y, Z, AA
+            J, K, L, M,
+            N, O, P, Q,
+            R, S, T, U,
+            V, W, X, Y
         ])
+
     hay_corte = (
         _es_corte_5m(ny)
         or _es_corte_15m(ny)
