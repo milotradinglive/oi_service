@@ -18,6 +18,7 @@ import fcntl
 import traceback
 import threading
 from collections import defaultdict as _dd, deque
+from gspread.utils import rowcol_to_a1
 from datetime import datetime, timedelta, timezone
 
 import pytz
@@ -961,47 +962,52 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # ---- rango dinámico según encabezado (evita corrimientos) ----
     N_COLS = len(encabezado[0])                     # ej: 25
-    END_COL = rowcol_to_a1(1, N_COLS).replace("1","")  # ej: "Y"
+    END_COL = re.sub(r"\d+", "", rowcol_to_a1(1, N_COLS))
 
-    # Tabla con fórmulas (incluye Y con fallback a X y AA con vacío si Y es blanco/0)
+    tabla = []
+
     s5      = f"SNAP_5min__{sheet_title}"
     s15     = f"SNAP__{sheet_title}"
     s1h     = f"SNAP_H1__{sheet_title}"
     sd0800  = f"SNAP_d0800__{sheet_title}"
     sd1550  = f"SNAP_d1550__{sheet_title}"
 
-    tabla = []
-    for i, tk in enumerate(filas_sorted, start=3):
-        m_call = stats[tk]["m_call"]; m_put = stats[tk]["m_put"]
-        v_call = stats[tk]["v_call"]; v_put = stats[tk]["v_put"]
+    for idx, tk in enumerate(filas_sorted):
+        # La primera fila de datos es la 3 (porque A2 es encabezado)
+        row = 3 + idx
 
-        H = f"=SI.ERROR(({A1(i,'D_m_call')}-{A1(i,'E_m_put')})/MAX({A1(i,'D_m_call')};{A1(i,'E_m_put')});0)"
-        I = f"=SI.ERROR(({A1(i,'F_v_call')}-{A1(i,'G_v_put')})/MAX({A1(i,'F_v_call')};{A1(i,'G_v_put')});0)"
+        m_call = agg[tk]["CALL"][0]
+        m_put  = agg[tk]["PUT"][0]
+        v_call = agg[tk]["CALL"][1]
+        v_put  = agg[tk]["PUT"][1]
 
-        # 5m
-        J = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s5}'!$A:$C;3;FALSO);)"
-        K = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s5}'!$A:$B;2;FALSO);)"
-        L = f"=SI.ERROR({A1(i,'J_5m_curr')}-{A1(i,'K_5m_prev')};0)"
-        M = f"=SI.ERROR({A1(i,'L_5m_delta')}/MAX(ABS({A1(i,'K_5m_prev')});0,000001);0)"
+        # H / I
+        H = f"=SI.ERROR((D{row}-E{row})/MAX(D{row};E{row});0)"
+        I = f"=SI.ERROR((F{row}-G{row})/MAX(F{row};G{row});0)"
 
-        # 15m
-        N = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s15}'!$A:$C;3;FALSO);)"
-        O = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s15}'!$A:$B;2;FALSO);)"
-        P = f"=SI.ERROR({A1(i,'N_15m_curr')}-{A1(i,'O_15m_prev')};0)"
-        Q = f"=SI.ERROR({A1(i,'P_15m_delta')}/MAX(ABS({A1(i,'O_15m_prev')});0,000001);0)"
+        # 5m: J K L M
+        J = f"=SI.ERROR(BUSCARV(C{row};'{s5}'!$A:$C;3;FALSO);)"
+        K = f"=SI.ERROR(BUSCARV(C{row};'{s5}'!$A:$B;2;FALSO);)"
+        L = f"=SI.ERROR(J{row}-K{row};0)"
+        M = f"=SI.ERROR(L{row}/MAX(ABS(K{row});0,000001);0)"
 
-        # 1h
-        R = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s1h}'!$A:$C;3;FALSO);)"
-        # fallback prev: si prev está en blanco, usa curr
-        S = f"=LET(_p;SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);{A1(i,'R_1h_curr')};_p))"
-        T = f"=SI.ERROR({A1(i,'R_1h_curr')}-{A1(i,'S_1h_prev')};0)"
-        U = f"=SI.ERROR({A1(i,'T_1h_delta')}/MAX(ABS({A1(i,'S_1h_prev')});0,000001);0)"
+        # 15m: N O P Q
+        N = f"=SI.ERROR(BUSCARV(C{row};'{s15}'!$A:$C;3;FALSO);)"
+        O = f"=SI.ERROR(BUSCARV(C{row};'{s15}'!$A:$B;2;FALSO);)"
+        P = f"=SI.ERROR(N{row}-O{row};0)"
+        Q = f"=SI.ERROR(P{row}/MAX(ABS(O{row});0,000001);0)"
 
-        # día
-        V = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{sd0800}'!$A:$C;3;FALSO);)"
-        W = f"=SI.ERROR(BUSCARV({A1(i,'C_ticker')};'{sd1550}'!$A:$C;3;FALSO);)"
-        X = f"=SI.ERROR({A1(i,'W_d1550')}-{A1(i,'V_d0800')};0)"
-        Y = f"=SI(O(ESBLANCO({A1(i,'W_d1550')});ABS({A1(i,'W_d1550')})=0);\"\";SI.ERROR({A1(i,'X_d_delta')}/ABS({A1(i,'W_d1550')});0))"
+        # 1h: R S T U  (S fallback: si prev está blanco, usa R)
+        R = f"=SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$C;3;FALSO);)"
+        S = f"=LET(_p;SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);R{row};_p))"
+        T = f"=SI.ERROR(R{row}-S{row};0)"
+        U = f"=SI.ERROR(T{row}/MAX(ABS(S{row});0,000001);0)"
+
+        # Día: V W X Y (Y vacío si W es blanco/0)
+        V = f"=SI.ERROR(BUSCARV(C{row};'{sd0800}'!$A:$C;3;FALSO);)"
+        W = f"=SI.ERROR(BUSCARV(C{row};'{sd1550}'!$A:$C;3;FALSO);)"
+        X = f"=SI.ERROR(W{row}-V{row};0)"
+        Y = f"=SI(O(ESBLANCO(W{row});ABS(W{row})=0);\"\";SI.ERROR(X{row}/ABS(W{row});0))"
 
         tabla.append([
             agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
