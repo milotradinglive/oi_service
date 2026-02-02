@@ -789,10 +789,10 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     end_row = 2000
 
     cfg = [
-      (11, 5),   # L  (5m Δ)
-      (15, 10),  # P  (15m Δ)
-      (19, 15),  # T  (1h Δ)
-      (23, 20),  # X  (día Δ)
+      (13, 5),   # N  (5m Δ)   -> col N (0-index 13)
+      (17, 10),  # R  (15m Δ)  -> col R (0-index 17)
+      (21, 15),  # V  (1h Δ)   -> col V (0-index 21)
+      (24, 20),  # Y? NO: día Δ es Z -> col Z (0-index 25) pero ojo, tu hoja hoy es de 25 cols
     ]
 
     req = []
@@ -840,7 +840,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     try:
         ws = _retry(lambda: doc.worksheet(sheet_title))
     except WorksheetNotFound:
-       ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=25))
+        ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=27))
 
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
