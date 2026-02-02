@@ -406,22 +406,27 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
     return ""
 
 # ========= Expiraciones y OI/dinero =========
-def elegir_expiracion_viernes(expiraciones, posicion_fecha):
-def elegir_expiracion_viernes(expiraciones, posicion_fecha):
+def elegir_expiracion_viernes(expiraciones, posicion_fecha: int):
     hoy = _now_ny().date()
     dias_a_viernes = (4 - hoy.weekday()) % 7
-    if dias_a_viernes == 0: dias_a_viernes = 7
-    proximo_viernes = hoy + _td(days=dias_a_viernes)
+    if dias_a_viernes == 0:
+        dias_a_viernes = 7
+    proximo_viernes = hoy + timedelta(days=dias_a_viernes)
+
     fechas_viernes = []
     for d in expiraciones or []:
         try:
-            dt = _dt.strptime(d, "%Y-%m-%d").date()
-            if dt.weekday() == 4 and dt >= proximo_viernes:
-                fechas_viernes.append(dt)
-        except: continue
+            dt_ = datetime.strptime(d, "%Y-%m-%d").date()
+            if dt_.weekday() == 4 and dt_ >= proximo_viernes:
+                fechas_viernes.append(dt_)
+        except Exception:
+            continue
+
     fechas_viernes.sort()
-    if len(fechas_viernes) <= posicion_fecha: return None
+    if len(fechas_viernes) <= posicion_fecha:
+        return None
     return fechas_viernes[posicion_fecha].strftime("%Y-%m-%d")
+
 
 def obtener_dinero(ticker, posicion_fecha=0):
     try:
@@ -441,16 +446,17 @@ def obtener_dinero(ticker, posicion_fecha=0):
         if not viernes_ref_str:
             return 0, 0, 0.0, 0.0, 0, 0, None
 
-        viernes_ref = _dt.strptime(viernes_ref_str, "%Y-%m-%d").date()
-        lunes_ref = viernes_ref - _td(days=4)
+        viernes_ref = datetime.strptime(viernes_ref_str, "%Y-%m-%d").date()
+        lunes_ref = viernes_ref - timedelta(days=4)
 
         fechas_semana = []
         for d in expiraciones:
             try:
-                dt = _dt.strptime(d, "%Y-%m-%d").date()
-                if lunes_ref <= dt <= viernes_ref:
-                    fechas_semana.append(dt)
-            except: continue
+                dt_ = datetime.strptime(d, "%Y-%m-%d").date()
+                if lunes_ref <= dt_ <= viernes_ref:
+                    fechas_semana.append(dt_)
+            except Exception:
+                continue
         fechas_semana.sort()
         fechas_a_sumar = [viernes_ref] if len(fechas_semana) == 1 else fechas_semana
 
@@ -460,7 +466,11 @@ def obtener_dinero(ticker, posicion_fecha=0):
 
         for fecha_vto in fechas_a_sumar:
             fecha_str = fecha_vto.strftime("%Y-%m-%d")
-            sj = get_json(f"{BASE_TRADIER}/markets/options/strikes", params={"symbol": ticker, "expiration": fecha_str})
+
+            sj = get_json(
+                f"{BASE_TRADIER}/markets/options/strikes",
+                params={"symbol": ticker, "expiration": fecha_str},
+            )
             raw_strikes = sj.get("strikes", {}).get("strike", []) or []
             strikes = [float(s) for s in raw_strikes]
 
@@ -469,13 +479,16 @@ def obtener_dinero(ticker, posicion_fecha=0):
                 params={"symbol": ticker, "expiration": fecha_str, "greeks": "false"},
             )
             opciones = cj.get("options", {}).get("option", []) or []
-            if isinstance(opciones, dict): opciones = [opciones]
+            if isinstance(opciones, dict):
+                opciones = [opciones]
 
             if precio <= 0 and opciones:
                 try:
                     under_px = float(opciones[0].get("underlying_price") or 0)
-                    if under_px > 0: precio = under_px
-                except: pass
+                    if under_px > 0:
+                        precio = under_px
+                except Exception:
+                    pass
 
             strikes_itm_call = sorted([s for s in strikes if s < precio], reverse=True)[:10]
             strikes_otm_call = sorted([s for s in strikes if s > precio])[:10]
@@ -486,8 +499,11 @@ def obtener_dinero(ticker, posicion_fecha=0):
             set_put = set(strikes_itm_put + strikes_otm_put)
 
             for op in opciones:
-                try: strike = float(op.get("strike", 0))
-                except: continue
+                try:
+                    strike = float(op.get("strike", 0))
+                except Exception:
+                    continue
+
                 typ = op.get("option_type")
                 oi = int(op.get("open_interest") or 0)
                 vol = int(op.get("volume") or 0)
@@ -496,9 +512,12 @@ def obtener_dinero(ticker, posicion_fecha=0):
                 last_opt = float(op.get("last") or 0.0)
 
                 mid = 0.0
-                if bid > 0 and ask > 0: mid = (bid + ask) / 2
-                elif ask > 0:           mid = ask
-                elif last_opt > 0:      mid = last_opt
+                if bid > 0 and ask > 0:
+                    mid = (bid + ask) / 2
+                elif ask > 0:
+                    mid = ask
+                elif last_opt > 0:
+                    mid = last_opt
 
                 if typ == "call" and strike in set_call:
                     oi_call_total += oi
@@ -514,8 +533,9 @@ def obtener_dinero(ticker, posicion_fecha=0):
             round(dinero_call_total / 1_000_000, 1),
             round(dinero_put_total / 1_000_000, 1),
             vol_call_total, vol_put_total,
-            viernes_ref_str
+            viernes_ref_str,
         )
+
     except Exception as e:
         print(f"❌ Error con {ticker}: {e}")
         return 0, 0, 0.0, 0.0, 0, 0, None
