@@ -777,10 +777,10 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     end_row = 2000
 
     cfg = [
-        (13, 5),   # N 5m
-        (17, 10),  # R 15m
-        (21, 15),  # V 1h
-        (25, 20),  # Z día
+      (11, 5),   # L  (5m Δ)
+      (15, 10),  # P  (15m Δ)
+      (19, 15),  # T  (1h Δ)
+      (23, 20),  # X  (día Δ)
     ]
 
     req = []
@@ -837,7 +837,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         ws,
         start_row_idx=2,
         end_row_idx=2000,
-        cols_0idx=[14, 18, 22, 26],  # O, S, W, AA (0-index)
+        cols_0idx=[12, 16, 20, 24]  # M, Q, U, Y
         ws_meta=ws_meta,
         sheet_title=sheet_title
     )
@@ -1004,8 +1004,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     )
 
     if hay_corte and tabla:
-        _retry(lambda: ws.batch_clear(["A3:AA2000"]))
-        _update_values(ws, f"A3:AA{len(tabla)+2}", tabla, user_entered=True)
+        _retry(lambda: ws.batch_clear([f"A3:{END_COL}2000"]))
+        _update_values(ws, f"A3:{END_COL}{len(tabla)+2}", tabla, user_entered=True)
 
         # Formatos % (SOLO por rangos)
         sheet_id = ws.id
@@ -1024,7 +1024,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                                        "fields": "userEnteredFormat.numberFormat"}})
 
         # O, S, W, AA -> 0%
-        for col in (14, 18, 22, 26):
+        for col in (12, 16, 20, 24):  # M, Q, U, Y (0-index)
             req.append({"repeatCell": {"range": {"sheetId": sheet_id,
                                                  "startRowIndex": start_row,
                                                  "endRowIndex": start_row + total_rows,
