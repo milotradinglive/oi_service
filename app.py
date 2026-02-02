@@ -829,35 +829,47 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Métricas por ticker y estado
+    # ========= Métricas por ticker y estado (CORREGIDO) =========
     stats = {}
+
     for tk in agg.keys():
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
+
+        # Ratios normalizados (evita división por cero)
         val_h_num = (m_call - m_put) / max(m_call, m_put) if max(m_call, m_put) > 0 else 0.0
         val_i_num = (v_call - v_put) / max(v_call, v_put) if max(v_call, v_put) > 0 else 0.0
-        estado_nuevo[tk] = (color_oi, color_vol, "", val_h_num, val_i_num)
 
-        prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
+        # Clasificación
+        clasif = _clasificar_filtro_institucional(val_h_num, val_i_num)
+
+        # Colores
         color_oi  = "🟢" if val_h_num > 0 else "🔴" if val_h_num < 0 else "⚪"
         color_vol = "🟢" if val_i_num > 0 else "🔴" if val_i_num < 0 else "⚪"
+
+        # Estado previo
+        prev_oi, prev_vol, prev_l, _ph, _pi = estado_prev.get(tk, ("", "", "", None, None))
+
         cambio_oi  = (prev_oi  != "") and (color_oi  != prev_oi)
         cambio_vol = (prev_vol != "") and (color_vol != prev_vol)
-        es_alineado = clasif in ("CALLS","PUTS")
+
+        es_alineado = clasif in ("CALLS", "PUTS")
         cambio_L = es_alineado and (clasif != prev_l)
 
         cambios_por_ticker[tk] = (cambio_oi, cambio_vol, cambio_L)
         estado_nuevo[tk] = (color_oi, color_vol, clasif, val_h_num, val_i_num)
 
         stats[tk] = {
-            "m_call": m_call, "m_put": m_put, "v_call": v_call, "v_put": v_put,
-            "val_h": val_h_num, "val_i": val_i_num, "clasif": clasif,
+            "m_call": m_call, "m_put": m_put,
+            "v_call": v_call, "v_put": v_put,
+            "val_h": val_h_num, "val_i": val_i_num,
+            "clasif": clasif,
         }
 
-    # Ordenar por val_h desc (tu "Fuerza")
+    # Ordenar por val_h desc (tu "Fuerza") — UNA sola vez
     filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
-    # Encabezado
+    # Encabezado — UNA sola vez
     from gspread.utils import rowcol_to_a1
     encabezado = [[
         "Fecha","Hora","Ticker",
