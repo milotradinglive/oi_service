@@ -557,6 +557,10 @@ def _meta_get_map(ws_meta):
         META_ROW_INDEX[k] = idx
     return META_CACHE[k]
 
+def _meta_read(ws_meta, key, default=""):
+    d = _meta_get_map(ws_meta)
+    return d.get(key, default)
+
 def _meta_write(ws_meta, key, val):
     d = _meta_get_map(ws_meta)
     idx_map = META_ROW_INDEX[ws_meta.title]
@@ -989,7 +993,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     hay_corte = (
         _es_corte_5m(ny)
         or _es_corte_15m(ny)
-        or (_es_corte_1hConVentana(ny, 3) and _should_run_h1_once(ws_meta, ny, sheet_title))
+        or run_h1
         or actualiza_d0800
         or actualiza_d1550
         or need_seed_0800
@@ -1061,7 +1065,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
 
     # 1h — con ventana de gracia
-    if _es_corte_1hConVentana(ny, ventana_min=3) and _should_run_h1_once(ws_meta, ny, sheet_title):
+    if run_h1:
         data_h1 = [["Ticker","N_prev","N_curr","ts"]]
         for tk in sorted(n_map.keys()):
             n_curr = n_map[tk]
