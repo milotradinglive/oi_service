@@ -371,9 +371,18 @@ def _escribir_estado(ws_estado, mapa):
     for tk in sorted(mapa.keys()):
         c_oi, c_v, e_l, prev_h, prev_i = mapa[tk]
         data.append([tk, c_oi, c_v, e_l, "" if prev_h is None else prev_h, "" if prev_i is None else prev_i])
-    _retry(lambda: ws_estado.batch_clear(["A2:F10000"]))
-    if len(data) > 1:
-        _update_values(ws_estado, f"A1:F{len(data)}", data)
+
+    new_rows = len(data)
+    last_rows = ESTADO_LAST_ROWS.get(ws_estado.title, 0)
+
+    # Escribe solo el rango necesario
+    _update_values(ws_estado, f"A1:F{new_rows}", data)
+
+    # Si antes había más filas, limpia SOLO lo sobrante (no borra 10.000 filas)
+    if last_rows > new_rows:
+        _retry(lambda: ws_estado.batch_clear([f"A{new_rows+1}:F{last_rows}"]))
+
+    ESTADO_LAST_ROWS[ws_estado.title] = new_rows
 
 # ========= Helpers hojas =========
 def _ensure_sheet_generic(doc, title, rows=200, cols=20):
@@ -944,7 +953,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         "N (1h SNAP)","O (1h SNAP)","1h","1h %",
         "N (1d 08:00)","N (1d 15:50)","día","día %"
     ]]
-    end_a1 = rowcol_to_a1(2, len(encabezado[0]))
+    end_a1 = rowcol_to_a1(2, len(encabezado[0]))  # fin en fila 2
     _update_values(ws, f"A2:{end_a1}", encabezado)
 
     # ---- rango dinámico según encabezado (evita corrimientos) ----
@@ -985,7 +994,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         X  = f"=SI.ERROR(BUSCARV($C{i};'{sd0800}'!$A:$C;3;FALSO);)"   # N_curr @ 08:00
         Y  = f"=SI.ERROR(BUSCARV($C{i};'{sd1550}'!$A:$C;3;FALSO);)"   # N_curr @ 15:50
         Z  = f"=SI.ERROR(Y{i}-X{i};0)"                                # Δ = Y − X
-        AA = f"=SI( O(ESBLANCO(X{i}); ABS(X{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(X{i});0) )"  # % = Δ/|X|
+        AA = f"=SI( O(ESBLANCO(Y{i}); ABS(Y{i})=0 ); \"\"; SI.ERROR(Z{i}/ABS(Y{i});0) )"
 
         tabla.append([
             agg[tk]["EXP"] or fecha_txt, hora_txt, tk,
@@ -1068,7 +1077,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             n_curr = n_map[tk]
             data_15.append([tk, n_prev, n_curr, ts])
             cache_15m[tk] = n_curr
-        _retry(lambda: ws_snap15.batch_clear(["A2:D10000"]))
         _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
 
     # 1h — con ventana de gracia
@@ -1079,7 +1087,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             n_prev = cache_h1.get(tk, n_curr)
             data_h1.append([tk, n_prev, n_curr, ts])
             cache_h1[tk] = n_curr
-        _retry(lambda: ws_snap1h.batch_clear(["A2:D10000"]))
         _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
 
     # ======= SNAP 1d @ 08:00 NY =======
@@ -1091,7 +1098,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             n_prev = cache_d0800.get(tk, n_curr)   # si no hay previo, usa curr
             data_d0800.append([tk, n_prev, n_curr, ts_now_d0800])
             cache_d0800[tk] = n_curr
-        _retry(lambda: ws_snap_d0800.batch_clear(["A2:D10000"]))
         _update_values(ws_snap_d0800, f"A1:D{len(data_d0800)}", data_d0800, user_entered=False)
 
     # ======= SNAP 1d @ 15:50 NY =======
@@ -1103,7 +1109,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             n_prev = cache_d1550.get(tk, n_curr)   # si no hay previo, usa curr
             data_d1550.append([tk, n_prev, n_curr, ts_now_d1550])
             cache_d1550[tk] = n_curr
-        _retry(lambda: ws_snap_d1550.batch_clear(["A2:D10000"]))
         _update_values(ws_snap_d1550, f"A1:D{len(data_d1550)}", data_d1550, user_entered=False)
     # Persistir estado
     _escribir_estado(ws_estado, estado_nuevo)
@@ -1112,7 +1117,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     return {tk: "" for tk in filas_sorted}
 
 # ========= Runner de UNA corrida =========
-def run_once(skip_oi: bool = False):
+def run_once(skip_oi: bool = False, force_write: bool = False):
     doc_main = client.open_by_key(MAIN_FILE_ID)
     accesos = client.open_by_key(ACCESS_FILE_ID)
     main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
@@ -1122,7 +1127,8 @@ def run_once(skip_oi: bool = False):
         now_ny_base = _now_ny()
 
         # ✅ Gate: solo ejecuta OI si estamos en corte real
-        if _is_any_cut(now_ny_base):
+        # (o si se fuerza manualmente desde /run?force_write=1)
+        if force_write or _is_any_cut(now_ny_base):
             l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
             l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
             try:
@@ -1133,7 +1139,6 @@ def run_once(skip_oi: bool = False):
         else:
             print(f"⏭️ No es corte (NY {now_ny_base:%H:%M:%S}) → se omite OI para evitar updates fuera de ventana.", flush=True)
 
-    doc_main = client.open_by_key(MAIN_FILE_ID)
     acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
 
     return {
@@ -1208,13 +1213,15 @@ def http_run():
     try:
         skip = request.args.get("skip_oi", "").strip().lower() in ("1", "true", "yes")
         print(f"➡️ [/run] inicio (skip_oi={skip})", flush=True)
+        force = request.args.get("force_write", "").strip().lower() in ("1", "true", "yes")
+        print(f"➡️ [/run] inicio (skip_oi={skip}, force_write={force})", flush=True)
         file_lock = _acquire_lock()
         if not file_lock:
             msg = "ya hay una ejecución en curso"
             print(f"⏳ [/run] {msg}", flush=True)
             return jsonify({"ok": False, "running": True, "msg": msg}), 409
         try:
-            result = run_once(skip_oi=skip)
+            result = run_once(skip_oi=skip, force_write=force)
             print(f"✅ [/run] ok: {result}", flush=True)
             return jsonify(result), 200
         finally:
