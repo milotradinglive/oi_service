@@ -143,14 +143,50 @@ class ReadRateLimiter:
 
 READ_LIMITER = ReadRateLimiter(max_reads_per_min=30)
 
+# ========= Rate limiter ESCRITURAS Sheets (anti-429 writes/min) =========
+class WriteRateLimiter:
+    def __init__(self, max_writes_per_min=20):
+        self.max = max_writes_per_min
+        self.q = deque()
+    def wait(self):
+        now = time.time()
+        while self.q and now - self.q[0] > 60:
+            self.q.popleft()
+        if len(self.q) >= self.max:
+            sleep_s = 60 - (now - self.q[0]) + 0.05
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+        self.q.append(time.time())
+
+WRITE_LIMITER = WriteRateLimiter(max_writes_per_min=20)
+_WRITE_LOCK = threading.Lock()
+
+def _safe_write(call):
+    # 1 sola escritura por “token”
+    WRITE_LIMITER.wait()
+    return _retry(call)
+
+def _batch_update_ranges(ws, updates, user_entered=True):
+    """
+    updates: lista de dicts: [{"range": "A1", "values": [[...]]}, ...]
+    -> 1 sola llamada HTTP por batch
+    """
+    if not updates:
+        return
+    opt = "USER_ENTERED" if user_entered else "RAW"
+    with _WRITE_LOCK:
+        _safe_write(lambda: ws.batch_update(updates, value_input_option=opt))
+        time.sleep(0.2)
+
 def _safe_read(call):
     READ_LIMITER.wait()
     return _retry(call)
 
 def _update_values(ws, range_name, values, user_entered=True):
     opt = "USER_ENTERED" if user_entered else "RAW"
-    _retry(lambda: ws.update(range_name=range_name, values=values, value_input_option=opt))
-    time.sleep(0.3)
+    with _WRITE_LOCK:
+        _safe_write(lambda: ws.update(range_name=range_name, values=values, value_input_option=opt))
+        time.sleep(0.2)
     
 def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sheet_title):
     """
@@ -505,42 +541,37 @@ def _get_cache_for(ws_snap):
 
 # ========= META helpers (para throttling ACCESOS) =========
 META_CACHE = {}  # {ws_title: {key: value}}
+META_ROW_INDEX = {}  # {ws_title: {key: row_number}}
 
 def _meta_get_map(ws_meta):
     k = ws_meta.title
     if k not in META_CACHE:
         vals = _safe_read(lambda: ws_meta.get_all_values())
         d = {}
-        for row in vals[1:]:
+        idx = {}
+        for row_i, row in enumerate(vals[1:], start=2):
             if len(row) >= 2 and row[0]:
                 d[row[0]] = row[1]
+                idx[row[0]] = row_i
         META_CACHE[k] = d
+        META_ROW_INDEX[k] = idx
     return META_CACHE[k]
-
-def _meta_read(ws_meta, key, default=""):
-    return _meta_get_map(ws_meta).get(key, default)
 
 def _meta_write(ws_meta, key, val):
     d = _meta_get_map(ws_meta)
+    idx_map = META_ROW_INDEX[ws_meta.title]
 
-    vals = _safe_read(lambda: ws_meta.get_all_values())
-    if not vals:
-        _update_values(ws_meta, "A1", [["key","value"]], user_entered=False)
-        vals = [["key","value"]]
-
-    found_row = None
-    for i, row in enumerate(vals[1:], start=2):
-        if len(row) >= 1 and row[0] == key:
-            found_row = i
-            break
-
-    if found_row is None:
-        next_row = len(vals) + 1
-        _update_values(ws_meta, f"A{next_row}:B{next_row}", [[key, val]], user_entered=False)
+    if key in idx_map:
+        r = idx_map[key]
+        _update_values(ws_meta, f"A{r}:B{r}", [[key, val]], user_entered=False)
     else:
-        _update_values(ws_meta, f"A{found_row}:B{found_row}", [[key, val]], user_entered=False)
+        # apéndice sin leer toda la hoja
+        next_row = len(d) + 2
+        _update_values(ws_meta, f"A{next_row}:B{next_row}", [[key, val]], user_entered=False)
+        idx_map[key] = next_row
 
-    d[key] = val  # ✅ actualiza cache
+    d[key] = val
+
 
 # ========= ACCESOS (Drive) — igual que antes, pero ejecutado cada 30 min =========
 def _col_indexes(ws):
@@ -607,8 +638,29 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
         return {"activados": 0, "revocados": 0, "skipped": True}
 
     hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
+    
+    # ========= batch writer para AUTORIZADOS (evita update_cell en loop) =========
+    from gspread.utils import rowcol_to_a1
+
+    pending = []  # [{"range":"A2","values":[["x"]]}, ...]
+
+    def _set_cell(r, c, v):
+        pending.append({"range": rowcol_to_a1(r, c), "values": [[v]]})
+
+    def _flush_pending(max_items=200):
+        nonlocal pending
+        if not pending:
+            return
+        # manda en chunks para no exceder payload
+        i = 0
+        while i < len(pending):
+            chunk = pending[i:i+max_items]
+            _batch_update_ranges(hoja_aut, chunk, user_entered=False)
+            i += max_items
+        pending = []
+
     cols = _col_indexes(hoja_aut)
-    rows = hoja_aut.get_all_records(default_blank="")
+    rows = _safe_read(lambda: hoja_aut.get_all_records(default_blank=""))
     now_utc = datetime.now(timezone.utc)
     sa_email = _get_sa_email_from_env_info()
     send_mail = (os.getenv("SEND_SHARE_EMAIL", "true").strip().lower() != "false")
@@ -631,7 +683,9 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
         role = rol_in if rol_in in ("reader", "commenter", "writer") else "reader"
 
         if email == sa_email:
-            hoja_aut.update_cell(idx, cols["nota"], "IGNORADO (service account)"); continue
+            _set_cell(idx, cols["nota"], "IGNORADO (service account)")
+            continue
+
 
         if estado == "REVOCADO":
             pid = perm_id or (by_email.get(email) or {}).get("id")
@@ -641,11 +695,13 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
                     except HttpError as e:
                         if getattr(e, "resp", None) and getattr(e.resp, "status", None) in (404, 400): pass
                         else: raise
-                hoja_aut.update_cell(idx, cols["perm_id"], "")
-                hoja_aut.update_cell(idx, cols["nota"], "Revocado (manual o ya no existía)")
+                _set_cell(idx, cols["perm_id"], "")
+                _set_cell(idx, cols["nota"], "Revocado (manual o ya no existía)")
+
                 by_email.pop(email, None); revocados += 1
             except Exception as e:
-                hoja_aut.update_cell(idx, cols["nota"], f"ERROR revoke: {e}")
+                _set_cell(idx, cols["nota"], f"ERROR revoke: {e}")
+
             continue
 
         if estado in ("", "PENDIENTE"):
@@ -653,22 +709,23 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
                 dur_td = _parse_duration_drive(dur_txt)
                 exp_dt = now_utc + dur_td
                 pid, modo = _grant_with_optional_exp(email, role, exp_dt, send_mail=send_mail)
-                hoja_aut.update_cell(idx, cols["creado_utc"], now_utc.replace(microsecond=0).isoformat() + "Z")
-                hoja_aut.update_cell(idx, cols["expira_utc"], exp_dt.replace(microsecond=0).isoformat() + "Z")
-                hoja_aut.update_cell(idx, cols["estado"], "ACTIVO")
-                hoja_aut.update_cell(idx, cols["perm_id"], pid)
-                hoja_aut.update_cell(idx, cols["nota"], f"Concedido ({modo})")
+                _set_cell(idx, cols["creado_utc"], now_utc.replace(microsecond=0).isoformat() + "Z")
+                _set_cell(idx, cols["expira_utc"], exp_dt.replace(microsecond=0).isoformat() + "Z")
+                _set_cell(idx, cols["estado"], "ACTIVO")
+                _set_cell(idx, cols["perm_id"], pid)
+                _set_cell(idx, cols["nota"], f"Concedido ({modo})")
+
                 by_email[email] = {"id": pid}; activados += 1
             except Exception as e:
-                hoja_aut.update_cell(idx, cols["nota"], f"ERROR grant: {e}")
+                _set_cell(idx, cols["nota"], f"ERROR grant: {e}")
             continue
 
         if estado == "ACTIVO":
             if not perm_id and email in by_email:
                 pid = by_email[email]["id"]
-                hoja_aut.update_cell(idx, cols["perm_id"], pid)
+                _set_cell(idx, cols["perm_id"], pid)
                 if not nota:
-                    hoja_aut.update_cell(idx, cols["nota"], "Sincronizado (existía en Drive)")
+                    _set_cell(idx, cols["nota"], "Sincronizado (existía en Drive)")
                 sincronizados += 1
 
             if expira:
@@ -677,18 +734,21 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
                     exp_dt = datetime.fromisoformat(iso)
                     if exp_dt.tzinfo is None: exp_dt = exp_dt.replace(tzinfo=timezone.utc)
                 except Exception:
-                    hoja_aut.update_cell(idx, cols["nota"], f"ERROR_PARSE_EXP: {expira}"); continue
+                    _set_cell(idx, cols["nota"], f"ERROR_PARSE_EXP: {expira}")
 
                 if datetime.now(timezone.utc) >= exp_dt:
                     try:
                         pid = (by_email.get(email) or {}).get("id") or perm_id
                         if pid: _revoke_by_id(pid)
-                        hoja_aut.update_cell(idx, cols["estado"], "REVOCADO")
-                        hoja_aut.update_cell(idx, cols["perm_id"], "")
-                        hoja_aut.update_cell(idx, cols["nota"], "Vencimiento automático")
+                        _set_cell(idx, cols["estado"], "REVOCADO")
+                        _set_cell(idx, cols["perm_id"], "")
+                        _set_cell(idx, cols["nota"], "Vencimiento automático")
                         by_email.pop(email, None); revocados += 1
                     except Exception as e:
-                        hoja_aut.update_cell(idx, cols["nota"], f"ERROR_REVOKE: {e}")
+                        _set_cell(idx, cols["nota"], f"ERROR_REVOKE: {e}")
+
+        # ✅ aplica todas las modificaciones acumuladas en 1 (o pocas) llamadas
+    _flush_pending()
 
     _meta_write(ws_meta, "last_accesses_check_iso", datetime.utcnow().replace(microsecond=0).isoformat() + "Z")
     print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
@@ -706,8 +766,8 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
         return
 
     sheet_id = ws.id
-    verde = {"red": 0.35, "green": 0.85, "blue": 0.35}   # VERDE fuerte (dinero entrando)
-    rojo  = {"red": 0.90, "green": 0.35, "blue": 0.35}   # ROJO fuerte (dinero saliendo)
+    verde = {"red": 0.35, "green": 0.85, "blue": 0.35}
+    rojo  = {"red": 0.90, "green": 0.35, "blue": 0.35}
 
     start_row = 2
     end_row = 2000
@@ -734,7 +794,8 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
                 "rule": {
                     "ranges": [rng],
                     "booleanRule": {
-                        "condition": {"type": "NUMBER_GREATER_THAN_EQ", "values": [{"userEnteredValue": str(thr)}]},
+                        "condition": {"type": "NUMBER_GREATER_THAN_EQ",
+                                      "values": [{"userEnteredValue": str(thr)}]},
                         "format": {"backgroundColor": verde}
                     }
                 },
@@ -747,7 +808,8 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
                 "rule": {
                     "ranges": [rng],
                     "booleanRule": {
-                        "condition": {"type": "NUMBER_LESS_THAN_EQ", "values": [{"userEnteredValue": str(-thr)}]},
+                        "condition": {"type": "NUMBER_LESS_THAN_EQ",
+                                      "values": [{"userEnteredValue": str(-thr)}]},
                         "format": {"backgroundColor": rojo}
                     }
                 },
@@ -938,52 +1000,32 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         _retry(lambda: ws.batch_clear(["A3:AA2000"]))
         _update_values(ws, f"A3:AA{len(tabla)+2}", tabla, user_entered=True)
 
-        # Formatos %
+        # Formatos % (SOLO por rangos)
         sheet_id = ws.id
         start_row = 2
         total_rows = len(tabla)
         req = []
-        # H, I, J -> 0.0%
+
         # H, I -> 0.0%
         for col in (7, 8):
-            req.append({"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+            req.append({"repeatCell": {"range": {"sheetId": sheet_id,
+                                                 "startRowIndex": start_row,
                                                  "endRowIndex": start_row + total_rows,
-                                                 "startColumnIndex": col, "endColumnIndex": col+1},
+                                                 "startColumnIndex": col,
+                                                 "endColumnIndex": col+1},
                                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT","pattern": "0.0%"}}},
                                        "fields": "userEnteredFormat.numberFormat"}})
+
         # O, S, W, AA -> 0%
         for col in (14, 18, 22, 26):
-            req.append({"repeatCell": {"range": {"sheetId": sheet_id, "startRowIndex": start_row,
+            req.append({"repeatCell": {"range": {"sheetId": sheet_id,
+                                                 "startRowIndex": start_row,
                                                  "endRowIndex": start_row + total_rows,
-                                                 "startColumnIndex": col, "endColumnIndex": col+1},
+                                                 "startColumnIndex": col,
+                                                 "endColumnIndex": col+1},
                                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT","pattern": "0%"}}},
                                        "fields": "userEnteredFormat.numberFormat"}})
 
-        # Colores (sin “amarillo por cambio” si no lo quieres; mantengo tu lógica actual)
-        verde    = {"red": 0.80, "green": 1.00, "blue": 0.80}
-        rojo     = {"red": 1.00, "green": 0.80, "blue": 0.80}
-        amarillo = {"red": 1.00, "green": 1.00, "blue": 0.60}
-        blanco   = {"red": 1.00, "green": 1.00, "blue": 1.00}
-
-        for idx, row in enumerate(tabla):
-            tk = str(row[2]).strip().upper()
-            ch_oi, ch_vol, ch_L = cambios_por_ticker.get(tk, (False, False, False))
-            clasif = estado_nuevo[tk][2]
-
-            bg_h = amarillo if ch_oi else blanco
-            bg_i = amarillo if ch_vol else blanco
-            req += [
-                {"repeatCell": {"range": {"sheetId": sheet_id,
-                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                          "startColumnIndex": 7, "endColumnIndex": 8},
-                                "cell": {"userEnteredFormat": {"backgroundColor": bg_h}},
-                                "fields": "userEnteredFormat.backgroundColor"}},
-                {"repeatCell": {"range": {"sheetId": sheet_id,
-                                          "startRowIndex": start_row + idx, "endRowIndex": start_row + idx + 1,
-                                          "startColumnIndex": 8, "endColumnIndex": 9},
-                                "cell": {"userEnteredFormat": {"backgroundColor": bg_i}},
-                                "fields": "userEnteredFormat.backgroundColor"}}
-            ]
         if req:
             _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
 
@@ -1004,8 +1046,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             n_curr = n_map[tk]
             data_5m.append([tk, n_prev, n_curr, ts])
             cache_5m[tk] = n_curr
-        _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
-        _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
+        rows = len(data_5m)
+        _update_values(ws_snap5m, f"A1:D{rows}", data_5m, user_entered=False)
 
     # 15m — cortes :00/:15/:30/:45
     if _es_corte_15m(ny):
@@ -1196,7 +1238,3 @@ def http_apply_access():
         
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
-
-
-
-
