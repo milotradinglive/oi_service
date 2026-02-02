@@ -407,7 +407,8 @@ def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
 
 # ========= Expiraciones y OI/dinero =========
 def elegir_expiracion_viernes(expiraciones, posicion_fecha):
-    hoy = _dt.now().date()
+def elegir_expiracion_viernes(expiraciones, posicion_fecha):
+    hoy = _now_ny().date()
     dias_a_viernes = (4 - hoy.weekday()) % 7
     if dias_a_viernes == 0: dias_a_viernes = 7
     proximo_viernes = hoy + _td(days=dias_a_viernes)
