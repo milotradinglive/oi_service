@@ -250,6 +250,17 @@ def _es_corte_1553(dt=None):
     ny = dt or _now_ny()
     return ny.hour == 15 and ny.minute == 53
 
+def _is_any_cut(ny):
+    """
+    True si estamos en un corte válido para ejecutar OI (5m/15m/1h ventana/diarios 08:00 y 15:50).
+    """
+    return (
+        _es_corte_5m(ny)
+        or _es_corte_15m(ny)
+        or _es_corte_1hConVentana(ny, 3)
+        or _es_snap_0800()
+        or _es_snap_1550()
+    )
 # === Helpers diarios (08:00 / 15:50) ===
 def _es_snap_0800(window_s=90):
     ny = _now_ny()
@@ -487,28 +498,43 @@ def _get_cache_for(ws_snap):
     return CACHE_SNAP[key]
 
 # ========= META helpers (para throttling ACCESOS) =========
+META_CACHE = {}  # {ws_title: {key: value}}
+
+def _meta_get_map(ws_meta):
+    k = ws_meta.title
+    if k not in META_CACHE:
+        vals = _safe_read(lambda: ws_meta.get_all_values())
+        d = {}
+        for row in vals[1:]:
+            if len(row) >= 2 and row[0]:
+                d[row[0]] = row[1]
+        META_CACHE[k] = d
+    return META_CACHE[k]
+
 def _meta_read(ws_meta, key, default=""):
-    vals = _safe_read(lambda: ws_meta.get_all_values())
-    kv = {}
-    for row in vals[1:]:
-        if len(row) >= 2 and row[0]:
-            kv[row[0]] = row[1]
-    return kv.get(key, default)
+    return _meta_get_map(ws_meta).get(key, default)
 
 def _meta_write(ws_meta, key, val):
+    d = _meta_get_map(ws_meta)
+
     vals = _safe_read(lambda: ws_meta.get_all_values())
     if not vals:
         _update_values(ws_meta, "A1", [["key","value"]], user_entered=False)
         vals = [["key","value"]]
+
     found_row = None
     for i, row in enumerate(vals[1:], start=2):
         if len(row) >= 1 and row[0] == key:
-            found_row = i; break
+            found_row = i
+            break
+
     if found_row is None:
         next_row = len(vals) + 1
         _update_values(ws_meta, f"A{next_row}:B{next_row}", [[key, val]], user_entered=False)
     else:
         _update_values(ws_meta, f"A{found_row}:B{found_row}", [[key, val]], user_entered=False)
+
+    d[key] = val  # ✅ actualiza cache
 
 # ========= ACCESOS (Drive) — igual que antes, pero ejecutado cada 30 min =========
 def _col_indexes(ws):
@@ -964,15 +990,18 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     ts = ny.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 5m — siempre
-    data_5m = [["Ticker","N_prev","N_curr","ts"]]
-    for tk in sorted(n_map.keys()):
-        n_prev = cache_5m.get(tk, "")
-        n_curr = n_map[tk]
-        data_5m.append([tk, n_prev, n_curr, ts])
-        cache_5m[tk] = n_curr
-    _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
-    _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
+    # 5m — solo en corte 5m (evita "update fantasma" en minutos raros como 9:31)
+    if _es_corte_5m(ny):
+        data_5m = [["Ticker","N_prev","N_curr","ts"]]
+        for tk in sorted(n_map.keys()):
+            n_prev = cache_5m.get(tk, "")
+            n_curr = n_map[tk]
+            data_5m.append([tk, n_prev, n_curr, ts])
+            cache_5m[tk] = n_curr
+        _retry(lambda: ws_snap5m.batch_clear(["A2:D10000"]))
+        _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
+    else:
+        print(f"⏭️ SNAP 5m omitido (NY {ny:%H:%M:%S}) — no es múltiplo de 5.", flush=True)
 
     # 15m — cortes :00/:15/:30/:45
     if _es_corte_15m(ny):
@@ -982,6 +1011,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             n_curr = n_map[tk]
             data_15.append([tk, n_prev, n_curr, ts])
             cache_15m[tk] = n_curr
+        _retry(lambda: ws_snap15.batch_clear(["A2:D10000"]))
         _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
 
     # 1h — con ventana de gracia
@@ -1034,13 +1064,18 @@ def run_once(skip_oi: bool = False):
     l_vto1 = l_vto2 = {}
     if not skip_oi:
         now_ny_base = _now_ny()
-        l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
-        l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
-        try:
-            print("SERVICIO_IO::K_SEMANA_ACTUAL=", json.dumps(l_vto1, ensure_ascii=False), flush=True)
-            print("SERVICIO_IO::K_SEMANA_SIGUIENTE=", json.dumps(l_vto2, ensure_ascii=False), flush=True)
-        except Exception:
-            pass
+
+        # ✅ Gate: solo ejecuta OI si estamos en corte real
+        if _is_any_cut(now_ny_base):
+            l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
+            l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
+            try:
+                print("SERVICIO_IO::K_SEMANA_ACTUAL=", json.dumps(l_vto1, ensure_ascii=False), flush=True)
+                print("SERVICIO_IO::K_SEMANA_SIGUIENTE=", json.dumps(l_vto2, ensure_ascii=False), flush=True)
+            except Exception:
+                pass
+        else:
+            print(f"⏭️ No es corte (NY {now_ny_base:%H:%M:%S}) → se omite OI para evitar updates fuera de ventana.", flush=True)
 
     doc_main = client.open_by_key(MAIN_FILE_ID)
     acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
@@ -1100,6 +1135,14 @@ def healthz():
 def update():
     if not _authorized(request):
         return jsonify({"error": "unauthorized"}), 401
+
+    print(
+        "🌐 /update caller:",
+        request.headers.get("X-Forwarded-For", request.remote_addr),
+        "| ua:", request.headers.get("User-Agent", ""),
+        flush=True
+    )
+
     t = threading.Thread(target=_run_guarded, daemon=True)
     t.start()
     return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z"}), 202
@@ -1129,19 +1172,28 @@ def http_run():
 def http_apply_access():
     if not _authorized(request):
         return jsonify({"error": "unauthorized"}), 401
+
     file_lock = _acquire_lock()
     if not file_lock:
         msg = "ya hay una ejecución en curso"
         print(f"⏳ [/apply_access] {msg}", flush=True)
         return jsonify({"ok": False, "running": True, "msg": msg}), 409
+
     try:
         print("➡️ [/apply_access] inicio", flush=True)
+        doc_main = client.open_by_key(MAIN_FILE_ID)
         accesos = client.open_by_key(ACCESS_FILE_ID)
         main_url = f"https://docs.google.com/spreadsheets/d/{MAIN_FILE_ID}/edit"
+
         acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
         return jsonify({"ok": True, **acc}), 200
     finally:
-        fcntl.flock(file_lock, fcntl.LOCK_UN); file_lock.close()
-
+        fcntl.flock(file_lock, fcntl.LOCK_UN)
+        file_lock.close()
+        
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+
+
+
+
