@@ -774,25 +774,31 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
 def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     """
     Milo — Señales por 'entrada de dinero' (Δ en millones) en columnas:
-    N(5m), R(15m), V(1h), Z(día).
+    L (5m Δ), P (15m Δ), T (1h Δ), X (día Δ).
     Verde si >= umbral, Rojo si <= -umbral.
     """
-    key = f"cf_inflow_v3__{sheet_title}"
+    key = f"cf_inflow_v4__{sheet_title}"
     if _meta_read(ws_meta, key, "") == "1":
         return
 
     sheet_id = ws.id
-    verde = {"red": 0.35, "green": 0.85, "blue": 0.35}
-    rojo  = {"red": 0.90, "green": 0.35, "blue": 0.35}
+
+    # ✅ Colores más fuertes (antes estaban más pastel)
+    verde = {"red": 0.20, "green": 0.78, "blue": 0.20}
+    rojo  = {"red": 0.86, "green": 0.20, "blue": 0.20}
 
     start_row = 2
     end_row = 2000
 
+    # ✅ Layout actual:
+    # A..Y (25 cols)
+    # L=5m Δ, P=15m Δ, T=1h Δ, X=día Δ
+    # 0-index: L=11, P=15, T=19, X=23
     cfg = [
-      (13, 5),   # N  (5m Δ)   -> col N (0-index 13)
-      (17, 10),  # R  (15m Δ)  -> col R (0-index 17)
-      (21, 15),  # V  (1h Δ)   -> col V (0-index 21)
-      (24, 20),  # Y? NO: día Δ es Z -> col Z (0-index 25) pero ojo, tu hoja hoy es de 25 cols
+        (11, 5),   # L  5m Δ  umbral 5
+        (15, 10),  # P  15m Δ umbral 10
+        (19, 15),  # T  1h Δ  umbral 15
+        (23, 20),  # X  día Δ umbral 20
     ]
 
     req = []
@@ -805,13 +811,16 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
             "endColumnIndex": col0 + 1
         }
 
+        # >= +thr -> verde
         req.append({
             "addConditionalFormatRule": {
                 "rule": {
                     "ranges": [rng],
                     "booleanRule": {
-                        "condition": {"type": "NUMBER_GREATER_THAN_EQ",
-                                      "values": [{"userEnteredValue": str(thr)}]},
+                        "condition": {
+                            "type": "NUMBER_GREATER_THAN_EQ",
+                            "values": [{"userEnteredValue": str(thr)}]
+                        },
                         "format": {"backgroundColor": verde}
                     }
                 },
@@ -819,13 +828,16 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
             }
         })
 
+        # <= -thr -> rojo
         req.append({
             "addConditionalFormatRule": {
                 "rule": {
                     "ranges": [rng],
                     "booleanRule": {
-                        "condition": {"type": "NUMBER_LESS_THAN_EQ",
-                                      "values": [{"userEnteredValue": str(-thr)}]},
+                        "condition": {
+                            "type": "NUMBER_LESS_THAN_EQ",
+                            "values": [{"userEnteredValue": str(-thr)}]
+                        },
                         "format": {"backgroundColor": rojo}
                     }
                 },
