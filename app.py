@@ -828,7 +828,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     try:
         ws = _retry(lambda: doc.worksheet(sheet_title))
     except WorksheetNotFound:
-        ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=27))
+       ws = _retry(lambda: doc.add_worksheet(title=sheet_title, rows=2000, cols=25))
 
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
@@ -837,7 +837,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         ws,
         start_row_idx=2,
         end_row_idx=2000,
-        cols_0idx=[12, 16, 20, 24]  # M, Q, U, Y
+        cols_0idx=[12, 16, 20, 24],  # M, Q, U, Y (0-index)
         ws_meta=ws_meta,
         sheet_title=sheet_title
     )
@@ -947,6 +947,10 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     end_a1 = rowcol_to_a1(2, len(encabezado[0]))
     _update_values(ws, f"A2:{end_a1}", encabezado)
 
+    # ---- rango dinámico según encabezado (evita corrimientos) ----
+    N_COLS = len(encabezado[0])                     # ej: 25
+    END_COL = rowcol_to_a1(1, N_COLS).replace("1","")  # ej: "Y"
+
     # Tabla con fórmulas (incluye Y con fallback a X y AA con vacío si Y es blanco/0)
     s5      = f"SNAP_5min__{sheet_title}"
     s15     = f"SNAP__{sheet_title}"
@@ -1023,7 +1027,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT","pattern": "0.0%"}}},
                                        "fields": "userEnteredFormat.numberFormat"}})
 
-        # O, S, W, AA -> 0%
+        # M, Q, U, Y -> 0%  (5m%, 15m%, 1h%, día%)
         for col in (12, 16, 20, 24):  # M, Q, U, Y (0-index)
             req.append({"repeatCell": {"range": {"sheetId": sheet_id,
                                                  "startRowIndex": start_row,
