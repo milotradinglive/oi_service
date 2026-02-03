@@ -1,20 +1,20 @@
 # app.py — Milo OI Service (Flask, anti-429, snapshots con cache, lecturas minimizadas)
 # ----------------------------------------------------------------------------
-# Cambios clave anti-429:
-# 1) Snapshots 5m/15m/1h/1d SIN LECTURAS por ciclo: cache en memoria por hoja de snapshot.
-#    El cache se inicializa una sola vez por hoja y luego solo se escribe.
-# 2) Rate limiter de lecturas (_safe_read) con bucket ~30 lecturas/min.
-# 3) "ACCESOS" se procesa cada 30 minutos (tracked en hoja META) para evitar spam.
-# 4) Mantiene la estructura Flask original: /healthz, /update (async), /run (sync), /apply_access.
-# 5) Misma lógica de cálculo que venías usando y mismas fórmulas H..AA.
-# 6) Nombres de snapshots: SNAP_5min__, SNAP__, SNAP_H1__, SNAP_dia__.
+# FIXES incluidos (compila + lógica estable):
+# 1) TABLA_LAST_ROWS definido (evita NameError).
+# 2) Bloque "if hay_corte and tabla:" y TODO lo de formatos/snapshots/estado
+#    queda DENTRO de actualizar_hoja (arregla indentación y flujo).
+# 3) _acquire_lock() limpio (sin duplicados) y unlock seguro en Windows (fcntl None).
 # ----------------------------------------------------------------------------
 
 import os
 import time
 import json
 import re
-import fcntl
+try:
+    import fcntl  # Linux/Render
+except Exception:
+    fcntl = None  # Windows (no disponible)
 import traceback
 import threading
 from collections import defaultdict as _dd, deque
@@ -34,6 +34,7 @@ from gspread.exceptions import WorksheetNotFound, APIError as GAPIError
 app = Flask(__name__)
 OI_SECRET = os.getenv("OI_SECRET", "").strip()
 APP_VERSION = os.getenv("RENDER_GIT_COMMIT", "")[:7] or "dev"
+
 # ========= Logging (simple) =========
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 _LEVELS = {"ERROR": 40, "WARN": 30, "WARNING": 30, "INFO": 20, "DEBUG": 10}
@@ -116,16 +117,28 @@ def _retry(call, tries=6, base=0.9, max_sleep=60):
     for k in range(tries):
         try:
             return call()
-        except GAPIError as e:
+
+        except (GAPIError, HttpError) as e:
             s = str(e)
-            if ("Internal error encountered" in s or "Quota exceeded" in s or "429" in s) and k < tries - 1:
+            if (
+                ("Internal error encountered" in s)
+                or ("Quota exceeded" in s)
+                or ("Rate Limit" in s)
+                or ("rate limit" in s.lower())
+                or ("quota" in s.lower())
+                or ("429" in s)
+                or ("The user has exceeded" in s)
+            ) and k < tries - 1:
                 sleep_s = min(max_sleep, base * (2 ** k)) + random.uniform(0, 0.6)
-                time.sleep(sleep_s); continue
+                time.sleep(sleep_s)
+                continue
             raise
+
         except Exception as e:
             s = str(e)
-            if ("rate limit" in s.lower() or "quota" in s.lower()) and k < tries - 1:
-                time.sleep(min(max_sleep, base * (2 ** k))); continue
+            if ("rate limit" in s.lower() or "quota" in s.lower() or "429" in s) and k < tries - 1:
+                time.sleep(min(max_sleep, base * (2 ** k)))
+                continue
             raise
 
 class ReadRateLimiter:
@@ -143,6 +156,14 @@ class ReadRateLimiter:
         self.q.append(time.time())
 
 READ_LIMITER = ReadRateLimiter(max_reads_per_min=30)
+
+def _safe_read(call):
+    """
+    Milo — lectura con rate limit y backoff (anti-429).
+    Importante: cuenta como 1 lectura por token.
+    """
+    READ_LIMITER.wait()
+    return _retry(call)
 
 # ========= Rate limiter ESCRITURAS Sheets (anti-429 writes/min) =========
 class WriteRateLimiter:
@@ -163,32 +184,42 @@ WRITE_LIMITER = WriteRateLimiter(max_writes_per_min=20)
 _WRITE_LOCK = threading.Lock()
 
 def _safe_write(call):
-    # 1 sola escritura por “token”
     WRITE_LIMITER.wait()
     return _retry(call)
 
+def _update_values(ws, a1_range, values, user_entered=True):
+    """
+    Milo — update de valores (1 llamada HTTP), con control anti-429.
+    - user_entered=True  -> respeta fórmulas y formatos (USER_ENTERED)
+    - user_entered=False -> RAW
+    """
+    opt = "USER_ENTERED" if user_entered else "RAW"
+
+    def _do():
+        return ws.update(a1_range, values, value_input_option=opt)
+
+    with _WRITE_LOCK:
+        _safe_write(_do)
+        time.sleep(0.12)
+
 def _batch_update_ranges(ws, updates, user_entered=True):
     """
-    updates: lista de dicts: [{"range": "A1", "values": [[...]]}, ...]
-    -> 1 sola llamada HTTP por batch
+    updates: lista de dicts: [{"range": "A2", "values": [[...]]}, ...]
+    -> 1 sola llamada HTTP por batch (worksheet-scope)
     """
     if not updates:
         return
+
+    for u in updates:
+        r = str(u.get("range", ""))
+        if "!" in r:
+            raise RuntimeError(f"Batch range inválido (debe ser 'A1', no 'Hoja!A1'): {r}")
+
     opt = "USER_ENTERED" if user_entered else "RAW"
     with _WRITE_LOCK:
         _safe_write(lambda: ws.batch_update(updates, value_input_option=opt))
         time.sleep(0.2)
 
-def _safe_read(call):
-    READ_LIMITER.wait()
-    return _retry(call)
-
-def _update_values(ws, range_name, values, user_entered=True):
-    opt = "USER_ENTERED" if user_entered else "RAW"
-    with _WRITE_LOCK:
-        _safe_write(lambda: ws.update(range_name=range_name, values=values, value_input_option=opt))
-        time.sleep(0.2)
-    
 def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sheet_title):
     """
     Milo — Borra reglas de Conditional Formatting SOLO en columnas específicas (0-index),
@@ -199,7 +230,6 @@ def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sh
         return
 
     sheet_id = ws.id
-    # Traer TODAS las reglas actuales del sheet
     rules = _safe_read(lambda: ws.spreadsheet.fetch_sheet_metadata()).get("sheets", [])
     target = None
     for sh in rules:
@@ -212,9 +242,7 @@ def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sh
         _meta_write(ws_meta, key, "1")
         return
 
-    # Construimos requests para borrar reglas que toquen esas columnas
     req = []
-    # Se borran por índice (de atrás hacia adelante)
     for idx in range(len(cf_rules) - 1, -1, -1):
         rule = cf_rules[idx]
         ranges = rule.get("ranges", []) or []
@@ -225,11 +253,9 @@ def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sh
             sr = r.get("startRowIndex", 0)
             er = r.get("endRowIndex", 0)
 
-            # Intersección de filas
             if er <= start_row_idx or sr >= end_row_idx:
                 continue
 
-            # Intersección con cualquiera de las columnas objetivo
             for c in cols_0idx:
                 if sc <= c < ec:
                     hit = True
@@ -241,15 +267,20 @@ def _reset_cf_for_columns(ws, start_row_idx, end_row_idx, cols_0idx, ws_meta, sh
             req.append({"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": idx}})
 
     if req:
-        _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
+        with _WRITE_LOCK:
+            _safe_write(lambda: ws.spreadsheet.batch_update({"requests": req}))
+            time.sleep(0.2)
 
     _meta_write(ws_meta, key, "1")
 
 # ========= Utilidades =========
 def S(v) -> str:
-    if v is None: return ""
-    try: return str(v).strip()
-    except Exception: return ""
+    if v is None:
+        return ""
+    try:
+        return str(v).strip()
+    except Exception:
+        return ""
 
 def fmt_millones(x):
     s = f"{x:,.1f}"
@@ -261,7 +292,8 @@ def fmt_entero_miles(x):
 
 # ========= Hora NY / cortes =========
 NY_TZ = pytz.timezone("America/New_York")
-def _now_ny(): return datetime.now(timezone.utc).astimezone(NY_TZ)
+def _now_ny():
+    return datetime.now(timezone.utc).astimezone(NY_TZ)
 
 def _es_corte_5m(dt=None):
     ny = dt or _now_ny()
@@ -273,13 +305,13 @@ def _es_corte_15m(dt=None):
 
 def _es_corte_1hConVentana(dt=None, ventana_min=3):
     ny = dt or _now_ny()
-    return ny.minute < ventana_min  # true de :00 a :02 NY
+    return ny.minute < ventana_min
 
 def _floor_hour(dt):
     return dt.replace(minute=0, second=0, microsecond=0)
 
 def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
-    key = f"last_h1_hour_iso__{scope_key}"  # clave por hoja
+    key = f"last_h1_hour_iso__{scope_key}"
     last_iso = _meta_read(ws_meta, key, "")
     current_hour = _floor_hour(ny_now).isoformat()
     if last_iso == current_hour:
@@ -287,8 +319,6 @@ def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
     _meta_write(ws_meta, key, current_hour)
     return True
 
-# === Helpers diarios (08:00 / 15:50) ===
-# ---- helper: after time NY ----
 def _after_time(h, m, dt=None):
     ny = dt or _now_ny()
     return (ny.hour, ny.minute) >= (h, m)
@@ -317,6 +347,9 @@ DAILY_SNAP_DONE = {}  # {(sheet_title, 'YYYY-MM-DD'): True}
 
 # Memo: cuántas filas escribimos la última vez en cada hoja ESTADO__
 ESTADO_LAST_ROWS = {}  # {ws_title: last_rows_written}
+
+# Memo: cuántas filas escribimos la última vez en cada hoja principal (tabla A3:END)
+TABLA_LAST_ROWS = {}  # {sheet_title: last_rows_written}
 
 def _daily_snapshot_done_today(ws_snap):
     hoy = _now_ny().strftime("%Y-%m-%d")
@@ -349,16 +382,22 @@ def _leer_estado(ws_estado):
     rows = _safe_read(lambda: ws_estado.get_all_values())
     d = {}
     for r in rows[1:]:
-        if not r: continue
+        if not r:
+            continue
         t = (r[0] or "").strip().upper()
-        if not t: continue
-        c_oi = (r[1] if len(r)>1 else "").strip()
-        c_v  = (r[2] if len(r)>2 else "").strip()
-        e_l  = (r[3] if len(r)>3 else "").strip()
-        try: prev_h = float(r[4]) if len(r)>4 and r[4] != "" else None
-        except: prev_h = None
-        try: prev_i = float(r[5]) if len(r)>5 and r[5] != "" else None
-        except: prev_i = None
+        if not t:
+            continue
+        c_oi = (r[1] if len(r) > 1 else "").strip()
+        c_v  = (r[2] if len(r) > 2 else "").strip()
+        e_l  = (r[3] if len(r) > 3 else "").strip()
+        try:
+            prev_h = float(r[4]) if len(r) > 4 and r[4] != "" else None
+        except Exception:
+            prev_h = None
+        try:
+            prev_i = float(r[5]) if len(r) > 5 and r[5] != "" else None
+        except Exception:
+            prev_i = None
         d[t] = (c_oi, c_v, e_l, prev_h, prev_i)
     return d
 
@@ -371,12 +410,11 @@ def _escribir_estado(ws_estado, mapa):
     new_rows = len(data)
     last_rows = ESTADO_LAST_ROWS.get(ws_estado.title, 0)
 
-    # Escribe solo el rango necesario
     _update_values(ws_estado, f"A1:F{new_rows}", data)
 
-    # Si antes había más filas, limpia SOLO lo sobrante (no borra 10.000 filas)
     if last_rows > new_rows:
         _retry(lambda: ws_estado.batch_clear([f"A{new_rows+1}:F{last_rows}"]))
+        time.sleep(0.12)
 
     ESTADO_LAST_ROWS[ws_estado.title] = new_rows
 
@@ -401,8 +439,10 @@ def _ensure_snapshot_sheet(doc, nombre_snap: str):
 
 # ========= Clasificador de filtro institucional (col. K) =========
 def _clasificar_filtro_institucional(val_h: float, val_i: float) -> str:
-    if (val_h > 0.5) and (val_i > 0.4): return "CALLS"
-    if (val_h < 0)   and (val_i < 0):   return "PUTS"
+    if (val_h > 0.5) and (val_i > 0.4):
+        return "CALLS"
+    if (val_h < 0) and (val_i < 0):
+        return "PUTS"
     return ""
 
 # ========= Expiraciones y OI/dinero =========
@@ -426,7 +466,6 @@ def elegir_expiracion_viernes(expiraciones, posicion_fecha: int):
     if len(fechas_viernes) <= posicion_fecha:
         return None
     return fechas_viernes[posicion_fecha].strftime("%Y-%m-%d")
-
 
 def obtener_dinero(ticker, posicion_fecha=0):
     try:
@@ -541,14 +580,14 @@ def obtener_dinero(ticker, posicion_fecha=0):
         return 0, 0, 0.0, 0.0, 0, 0, None
 
 # ========= SNAPSHOT CACHE (memoria) =========
-# Mapa: sheet_title -> { ticker: last_N_curr }
-CACHE_SNAP = {}
+CACHE_SNAP = {}  # sheet_title -> { ticker: last_N_curr }
 
 def _cargar_cache_snapshot(ws_snap, cache_dict):
     rows = _safe_read(lambda: ws_snap.get_values("A2:C"))
     cache_dict.clear()
     for r in rows:
-        if not r or not r[0]: continue
+        if not r or not r[0]:
+            continue
         tk = r[0].strip().upper()
         try:
             n_curr = float(str(r[2]).replace(",", ".")) if len(r) > 2 and str(r[2]).strip() != "" else None
@@ -565,7 +604,7 @@ def _get_cache_for(ws_snap):
     return CACHE_SNAP[key]
 
 # ========= META helpers (para throttling ACCESOS) =========
-META_CACHE = {}  # {ws_title: {key: value}}
+META_CACHE = {}      # {ws_title: {key: value}}
 META_ROW_INDEX = {}  # {ws_title: {key: row_number}}
 
 def _meta_get_map(ws_meta):
@@ -590,63 +629,88 @@ def _meta_write(ws_meta, key, val):
     d = _meta_get_map(ws_meta)
     idx_map = META_ROW_INDEX[ws_meta.title]
 
+    if (key in d) != (key in idx_map):
+        META_CACHE.pop(ws_meta.title, None)
+        META_ROW_INDEX.pop(ws_meta.title, None)
+        d = _meta_get_map(ws_meta)
+        idx_map = META_ROW_INDEX[ws_meta.title]
+
     if key in idx_map:
         r = idx_map[key]
         _update_values(ws_meta, f"A{r}:B{r}", [[key, val]], user_entered=False)
     else:
-        # apéndice sin leer toda la hoja
-        next_row = len(d) + 2
+        last_row = max(idx_map.values()) if idx_map else 1
+        next_row = last_row + 1
         _update_values(ws_meta, f"A{next_row}:B{next_row}", [[key, val]], user_entered=False)
         idx_map[key] = next_row
 
     d[key] = val
 
-
-# ========= ACCESOS (Drive) — igual que antes, pero ejecutado cada 30 min =========
+# ========= ACCESOS (Drive) — cada 30 min =========
 def _col_indexes(ws):
     headers = [S(h).lower() for h in _safe_read(lambda: ws.row_values(1))]
     def col(name):
         name = name.strip().lower()
-        try: return headers.index(name) + 1
-        except ValueError: raise RuntimeError(f"Encabezado '{name}' no encontrado en {ws.title}.")
-    return {"email": col("email"), "duracion": col("duracion"), "rol": col("rol"),
-            "creado_utc": col("creado_utc"), "expira_utc": col("expira_utc"),
-            "estado": col("estado"), "perm_id": col("perm_id"), "nota": col("nota")}
+        try:
+            return headers.index(name) + 1
+        except ValueError:
+            raise RuntimeError(f"Encabezado '{name}' no encontrado en {ws.title}.")
+    return {
+        "email": col("email"),
+        "duracion": col("duracion"),
+        "rol": col("rol"),
+        "creado_utc": col("creado_utc"),
+        "expira_utc": col("expira_utc"),
+        "estado": col("estado"),
+        "perm_id": col("perm_id"),
+        "nota": col("nota"),
+    }
 
 def _parse_duration_drive(s: str) -> timedelta:
     s = S(s).lower()
-    if not s: return timedelta(hours=24)
+    if not s:
+        return timedelta(hours=24)
     total_h = 0.0
     for num, unit in re.findall(r"(\d+(?:\.\d+)?)([dh])", s):
-        n = float(num); total_h += n * (24 if unit == "d" else 1)
+        n = float(num)
+        total_h += n * (24 if unit == "d" else 1)
     if total_h == 0:
-        try: total_h = float(s)
-        except: total_h = 24.0
+        try:
+            total_h = float(s)
+        except Exception:
+            total_h = 24.0
     return timedelta(hours=total_h)
 
 def _get_sa_email_from_env_info() -> str:
-    try: return S(_creds_info.get("client_email", "")).lower()
+    try:
+        return S(_creds_info.get("client_email", "")).lower()
     except Exception:
-        try: return S(json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON", "")).get("client_email", "")).lower()
-        except Exception: return ""
+        try:
+            return S(json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON", "")).get("client_email", "")).lower()
+        except Exception:
+            return ""
 
 def _grant_with_optional_exp(email: str, role: str, exp_dt: datetime, send_mail=True, email_message=None):
     base = {"type": "user", "role": role, "emailAddress": email}
-    if email_message: base["emailMessage"] = email_message
+    if email_message:
+        base["emailMessage"] = email_message
     try:
         body = {**base, "expirationTime": exp_dt.replace(microsecond=0).isoformat()}
-        created = drive.permissions().create(fileId=MAIN_FILE_ID, body=body, fields="id",
-                                             sendNotificationEmail=send_mail).execute()
+        created = drive.permissions().create(
+            fileId=MAIN_FILE_ID, body=body, fields="id", sendNotificationEmail=send_mail
+        ).execute()
         return created["id"], "OK"
     except HttpError as e:
         msg = str(e)
         if "cannotSetExpiration" in msg:
-            created = drive.permissions().create(fileId=MAIN_FILE_ID, body=base, fields="id",
-                                                 sendNotificationEmail=send_mail).execute()
+            created = drive.permissions().create(
+                fileId=MAIN_FILE_ID, body=base, fields="id", sendNotificationEmail=send_mail
+            ).execute()
             return created["id"], "NO_EXP"
         if "invalidSharingRequest" in msg:
-            created = drive.permissions().create(fileId=MAIN_FILE_ID, body=base, fields="id",
-                                                 sendNotificationEmail=True).execute()
+            created = drive.permissions().create(
+                fileId=MAIN_FILE_ID, body=base, fields="id", sendNotificationEmail=True
+            ).execute()
             return created["id"], "NOTIFIED"
         raise
 
@@ -660,15 +724,15 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
     should = True
     if last:
         try:
-            last_dt = datetime.fromisoformat(last.replace("Z","")).replace(tzinfo=timezone.utc)
+            last_dt = datetime.fromisoformat(last.replace("Z", "")).replace(tzinfo=timezone.utc)
             should = (now - last_dt) >= timedelta(minutes=30)
-        except: should = True
+        except Exception:
+            should = True
     if not should:
         return {"activados": 0, "revocados": 0, "skipped": True}
 
     hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
-    
-    # ========= batch writer para AUTORIZADOS (evita update_cell en loop) =========
+
     pending = []  # [{"range":"A2","values":[["x"]]}, ...]
 
     def _set_cell(r, c, v):
@@ -678,7 +742,6 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
         nonlocal pending
         if not pending:
             return
-        # manda en chunks para no exceder payload
         i = 0
         while i < len(pending):
             chunk = pending[i:i+max_items]
@@ -692,7 +755,9 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
     sa_email = _get_sa_email_from_env_info()
     send_mail = (os.getenv("SEND_SHARE_EMAIL", "true").strip().lower() != "false")
 
-    perms = drive.permissions().list(fileId=MAIN_FILE_ID, fields="permissions(id,emailAddress,role,type)").execute().get("permissions", [])
+    perms = drive.permissions().list(
+        fileId=MAIN_FILE_ID, fields="permissions(id,emailAddress,role,type)"
+    ).execute().get("permissions", [])
     by_email = {(S(p.get("emailAddress")).lower()): p for p in perms if S(p.get("type")).lower() == "user"}
 
     activados = revocados = sincronizados = 0
@@ -705,7 +770,8 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
         perm_id = S(r.get("perm_id"))
         expira = S(r.get("expira_utc"))
         nota = S(r.get("nota"))
-        if not email: continue
+        if not email:
+            continue
 
         role = rol_in if rol_in in ("reader", "commenter", "writer") else "reader"
 
@@ -713,22 +779,24 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
             _set_cell(idx, cols["nota"], "IGNORADO (service account)")
             continue
 
-
         if estado == "REVOCADO":
             pid = perm_id or (by_email.get(email) or {}).get("id")
             try:
                 if pid:
-                    try: _revoke_by_id(pid)
+                    try:
+                        _revoke_by_id(pid)
                     except HttpError as e:
-                        if getattr(e, "resp", None) and getattr(e.resp, "status", None) in (404, 400): pass
-                        else: raise
+                        st = getattr(getattr(e, "resp", None), "status", None)
+                        if st in (404, 400):
+                            pass
+                        else:
+                            raise
                 _set_cell(idx, cols["perm_id"], "")
                 _set_cell(idx, cols["nota"], "Revocado (manual o ya no existía)")
-
-                by_email.pop(email, None); revocados += 1
+                by_email.pop(email, None)
+                revocados += 1
             except Exception as e:
                 _set_cell(idx, cols["nota"], f"ERROR revoke: {e}")
-
             continue
 
         if estado in ("", "PENDIENTE"):
@@ -741,8 +809,8 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
                 _set_cell(idx, cols["estado"], "ACTIVO")
                 _set_cell(idx, cols["perm_id"], pid)
                 _set_cell(idx, cols["nota"], f"Concedido ({modo})")
-
-                by_email[email] = {"id": pid}; activados += 1
+                by_email[email] = {"id": pid}
+                activados += 1
             except Exception as e:
                 _set_cell(idx, cols["nota"], f"ERROR grant: {e}")
             continue
@@ -756,35 +824,38 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
                 sincronizados += 1
 
             if expira:
+                exp_dt = None
                 try:
                     iso = expira.rstrip("Z")
                     exp_dt = datetime.fromisoformat(iso)
-                    if exp_dt.tzinfo is None: exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
                 except Exception:
                     _set_cell(idx, cols["nota"], f"ERROR_PARSE_EXP: {expira}")
 
-                if datetime.now(timezone.utc) >= exp_dt:
+                if exp_dt and datetime.now(timezone.utc) >= exp_dt:
                     try:
                         pid = (by_email.get(email) or {}).get("id") or perm_id
-                        if pid: _revoke_by_id(pid)
+                        if pid:
+                            _revoke_by_id(pid)
                         _set_cell(idx, cols["estado"], "REVOCADO")
                         _set_cell(idx, cols["perm_id"], "")
                         _set_cell(idx, cols["nota"], "Vencimiento automático")
-                        by_email.pop(email, None); revocados += 1
+                        by_email.pop(email, None)
+                        revocados += 1
                     except Exception as e:
                         _set_cell(idx, cols["nota"], f"ERROR_REVOKE: {e}")
 
-        # ✅ aplica todas las modificaciones acumuladas en 1 (o pocas) llamadas
     _flush_pending()
 
     _meta_write(ws_meta, "last_accesses_check_iso", datetime.utcnow().replace(microsecond=0).isoformat() + "Z")
     print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}")
     return {"activados": activados, "revocados": revocados, "skipped": False}
 
-# ========= Actualización de una hoja objetivo (anti-429) =========
+# ========= CF: inflow thresholds =========
 def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     """
-    Milo — Señales por 'entrada de dinero' (Δ en millones) en columnas:
+    Señales por 'entrada de dinero' (Δ en millones) en columnas:
     L (5m Δ), P (15m Δ), T (1h Δ), X (día Δ).
     Verde si >= umbral, Rojo si <= -umbral.
     """
@@ -793,23 +864,17 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
         return
 
     sheet_id = ws.id
-
-    # ✅ Colores más fuertes (antes estaban más pastel)
     verde = {"red": 0.20, "green": 0.78, "blue": 0.20}
     rojo  = {"red": 0.86, "green": 0.20, "blue": 0.20}
 
     start_row = 2
     end_row = 2000
 
-    # ✅ Layout actual:
-    # A..Y (25 cols)
-    # L=5m Δ, P=15m Δ, T=1h Δ, X=día Δ
-    # 0-index: L=11, P=15, T=19, X=23
     cfg = [
-        (11, 5),   # L  5m Δ  umbral 5
-        (15, 10),  # P  15m Δ umbral 10
-        (19, 15),  # T  1h Δ  umbral 15
-        (23, 20),  # X  día Δ umbral 20
+        (11, 5),   # L  5m Δ
+        (15, 10),  # P  15m Δ
+        (19, 15),  # T  1h Δ
+        (23, 20),  # X  día Δ
     ]
 
     req = []
@@ -822,7 +887,6 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
             "endColumnIndex": col0 + 1
         }
 
-        # >= +thr -> verde
         req.append({
             "addConditionalFormatRule": {
                 "rule": {
@@ -839,7 +903,6 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
             }
         })
 
-        # <= -thr -> rojo
         req.append({
             "addConditionalFormatRule": {
                 "rule": {
@@ -856,9 +919,13 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
             }
         })
 
-    _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
+    with _WRITE_LOCK:
+        _safe_write(lambda: ws.spreadsheet.batch_update({"requests": req}))
+        time.sleep(0.2)
+
     _meta_write(ws_meta, key, "1")
-    
+
+# ========= Actualización de una hoja objetivo =========
 def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     try:
         ws = _retry(lambda: doc.worksheet(sheet_title))
@@ -867,7 +934,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
-    # 1) Limpiar SOLO CF viejo de % (O,S,W,AA) — 1 sola vez por hoja
+    # 1) Limpiar CF viejo % (O,S,W,AA) — 1 sola vez
     _reset_cf_for_columns(
         ws,
         start_row_idx=2,
@@ -877,7 +944,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         sheet_title=sheet_title
     )
 
-    # 2) Aplicar CF nuevo por entrada de dinero (Δ) en N/R/V/Z — 1 sola vez por hoja
+    # 2) Aplicar CF nuevo por Δ en L/P/T/X — 1 sola vez
     _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta)
 
     ny = now_ny_base or _now_ny()
@@ -892,11 +959,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     estado_nuevo = {}
     cambios_por_ticker = {}
 
+    # Snap sheets
     ws_snap5m = _ensure_snapshot_sheet(doc, f"SNAP_5min__{sheet_title}")
     ws_snap15 = _ensure_snapshot_sheet(doc, f"SNAP__{sheet_title}")
     ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H1__{sheet_title}")
-    ws_snap_d0800 = _ensure_snapshot_sheet(doc, f"SNAP_d0800__{sheet_title}")  # 1d @ 08:00 NY
-    ws_snap_d1550 = _ensure_snapshot_sheet(doc, f"SNAP_d1550__{sheet_title}")  # 1d @ 15:50 NY
+    ws_snap_d0800 = _ensure_snapshot_sheet(doc, f"SNAP_d0800__{sheet_title}")
+    ws_snap_d1550 = _ensure_snapshot_sheet(doc, f"SNAP_d1550__{sheet_title}")
 
     cache_5m  = _get_cache_for(ws_snap5m)
     cache_15m = _get_cache_for(ws_snap15)
@@ -907,14 +975,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     actualiza_d0800 = _es_snap_0800(ny)
     actualiza_d1550 = _es_snap_1550(ny)
 
-    # ===== Gate único para snapshot 1h (evita doble ejecución en la misma hora) =====
     run_h1 = _es_corte_1hConVentana(ny, 3) and _should_run_h1_once(ws_meta, ny, sheet_title)
 
     need_seed_0800 = _after_time(8, 0, ny)   and not _daily_snapshot_done_today(ws_snap_d0800)
     need_seed_1550 = _after_time(15, 50, ny) and not _daily_snapshot_done_today(ws_snap_d1550)
 
-# ===== Recolección base (snapshots diarios se manejan abajo) =====
-   
     # Recolecta datos
     datos = []
     for tk in TICKERS:
@@ -931,9 +996,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # ========= Métricas por ticker y estado =========
+    # Métricas y estado
     stats = {}
-
     for tk in agg.keys():
         m_call, v_call = agg[tk]["CALL"]
         m_put,  v_put  = agg[tk]["PUT"]
@@ -964,10 +1028,19 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             "clasif": clasif,
         }
 
-    # Ordenar UNA sola vez
     filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
-    # Encabezado — UNA sola vez
+    # Gate de escritura
+    hay_corte = (
+        _es_corte_5m(ny)
+        or _es_corte_15m(ny)
+        or run_h1
+        or actualiza_d0800
+        or actualiza_d1550
+        or need_seed_0800
+        or need_seed_1550
+    )
+
     encabezado = [[
         "Fecha","Hora","Ticker",
         "Trade Cnt VERDE","Trade Cnt ROJO",
@@ -978,12 +1051,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         "N (1h SNAP)","O (1h SNAP)","1h","1h %",
         "N (1d 08:00)","N (1d 15:50)","día","día %"
     ]]
-    end_a1 = rowcol_to_a1(2, len(encabezado[0]))  # fin en fila 2
-    _update_values(ws, f"A2:{end_a1}", encabezado)
-
-    # ---- rango dinámico según encabezado (evita corrimientos) ----
-    N_COLS = len(encabezado[0])                     # ej: 25
+    N_COLS = len(encabezado[0])
     END_COL = re.sub(r"\d+", "", rowcol_to_a1(1, N_COLS))
+
+    if hay_corte:
+        end_a1 = rowcol_to_a1(2, N_COLS)
+        _update_values(ws, f"A2:{end_a1}", encabezado)
 
     tabla = []
 
@@ -994,7 +1067,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     sd1550  = f"SNAP_d1550__{sheet_title}"
 
     for idx, tk in enumerate(filas_sorted):
-        # La primera fila de datos es la 3 (porque A2 es encabezado)
         row = 3 + idx
 
         m_call = agg[tk]["CALL"][0]
@@ -1002,29 +1074,24 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         v_call = agg[tk]["CALL"][1]
         v_put  = agg[tk]["PUT"][1]
 
-        # H / I
         H = f"=SI.ERROR((D{row}-E{row})/MAX(D{row};E{row});0)"
         I = f"=SI.ERROR((F{row}-G{row})/MAX(F{row};G{row});0)"
 
-        # 5m: J K L M
         J = f"=SI.ERROR(BUSCARV(C{row};'{s5}'!$A:$C;3;FALSO);)"
         K = f"=SI.ERROR(BUSCARV(C{row};'{s5}'!$A:$B;2;FALSO);)"
         L = f"=SI.ERROR(J{row}-K{row};0)"
         M = f"=SI.ERROR(L{row}/MAX(ABS(K{row});0,000001);0)"
 
-        # 15m: N O P Q
         N = f"=SI.ERROR(BUSCARV(C{row};'{s15}'!$A:$C;3;FALSO);)"
         O = f"=SI.ERROR(BUSCARV(C{row};'{s15}'!$A:$B;2;FALSO);)"
         P = f"=SI.ERROR(N{row}-O{row};0)"
         Q = f"=SI.ERROR(P{row}/MAX(ABS(O{row});0,000001);0)"
 
-        # 1h: R S T U  (S fallback: si prev está blanco, usa R)
         R = f"=SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$C;3;FALSO);)"
-        S = f"=LET(_p;SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);R{row};_p))"
+        S_ = f"=LET(_p;SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);R{row};_p))"
         T = f"=SI.ERROR(R{row}-S{row};0)"
         U = f"=SI.ERROR(T{row}/MAX(ABS(S{row});0,000001);0)"
 
-        # Día: V W X Y (Y vacío si W es blanco/0)
         V = f"=SI.ERROR(BUSCARV(C{row};'{sd0800}'!$A:$C;3;FALSO);)"
         W = f"=SI.ERROR(BUSCARV(C{row};'{sd1550}'!$A:$C;3;FALSO);)"
         X = f"=SI.ERROR(W{row}-V{row};0)"
@@ -1037,118 +1104,122 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             H, I,
             J, K, L, M,
             N, O, P, Q,
-            R, S, T, U,
+            R, S_, T, U,
             V, W, X, Y
         ])
 
-    hay_corte = (
-        _es_corte_5m(ny)
-        or _es_corte_15m(ny)
-        or run_h1
-        or actualiza_d0800
-        or actualiza_d1550
-        or need_seed_0800
-        or need_seed_1550
-    )
-
+    # ========= ESCRITURA TABLA + FORMATOS + SNAPSHOTS + ESTADO (DENTRO de la función) =========
     if hay_corte and tabla:
-        _retry(lambda: ws.batch_clear([f"A3:{END_COL}2000"]))
-        _update_values(ws, f"A3:{END_COL}{len(tabla)+2}", tabla, user_entered=True)
+        new_last_row = len(tabla) + 2
+        prev_last_row = TABLA_LAST_ROWS.get(sheet_title, 0)
 
-        # Formatos % (SOLO por rangos)
+        _update_values(ws, f"A3:{END_COL}{new_last_row}", tabla, user_entered=True)
+
+        if prev_last_row > new_last_row:
+            _retry(lambda: ws.batch_clear([f"A{new_last_row+1}:{END_COL}{prev_last_row}"]))
+            time.sleep(0.12)
+
+        TABLA_LAST_ROWS[sheet_title] = new_last_row
+
+        # Formatos %
         sheet_id = ws.id
         start_row = 2
         total_rows = len(tabla)
         req = []
 
-        # H, I -> 0.0%
         for col in (7, 8):
-            req.append({"repeatCell": {"range": {"sheetId": sheet_id,
-                                                 "startRowIndex": start_row,
-                                                 "endRowIndex": start_row + total_rows,
-                                                 "startColumnIndex": col,
-                                                 "endColumnIndex": col+1},
-                                       "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT","pattern": "0.0%"}}},
-                                       "fields": "userEnteredFormat.numberFormat"}})
+            req.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": col,
+                        "endColumnIndex": col + 1
+                    },
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}},
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            })
 
-        # M, Q, U, Y -> 0%  (5m%, 15m%, 1h%, día%)
-        for col in (12, 16, 20, 24):  # M, Q, U, Y (0-index)
-            req.append({"repeatCell": {"range": {"sheetId": sheet_id,
-                                                 "startRowIndex": start_row,
-                                                 "endRowIndex": start_row + total_rows,
-                                                 "startColumnIndex": col,
-                                                 "endColumnIndex": col+1},
-                                       "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT","pattern": "0%"}}},
-                                       "fields": "userEnteredFormat.numberFormat"}})
+        for col in (12, 16, 20, 24):
+            req.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_row,
+                        "endRowIndex": start_row + total_rows,
+                        "startColumnIndex": col,
+                        "endColumnIndex": col + 1
+                    },
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}}},
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            })
 
         if req:
-            _retry(lambda: ws.spreadsheet.batch_update({"requests": req}))
+            with _WRITE_LOCK:
+                _safe_write(lambda: ws.spreadsheet.batch_update({"requests": req}))
+                time.sleep(0.2)
 
-    # ====== SNAPSHOTS (solo escrituras, usando cache) ======
-    n_map = {}
-    for tk in filas_sorted:
-        m_call = agg[tk]["CALL"][0]
-        m_put  = agg[tk]["PUT"][0]
-        n_map[tk] = round(m_call - m_put, 1)
+        # SNAPSHOTS (solo escrituras, usando cache)
+        n_map = {}
+        for tk in filas_sorted:
+            m_call = agg[tk]["CALL"][0]
+            m_put  = agg[tk]["PUT"][0]
+            n_map[tk] = round(m_call - m_put, 1)
 
-    ts = ny.strftime("%Y-%m-%d %H:%M:%S")
+        ts = ny.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 5m — solo en corte 5m (evita "update fantasma" en minutos raros como 9:31)
-    if _es_corte_5m(ny):
-        data_5m = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_prev = cache_5m.get(tk, "")
-            n_curr = n_map[tk]
-            data_5m.append([tk, n_prev, n_curr, ts])
-            cache_5m[tk] = n_curr
-        rows = len(data_5m)
-        _update_values(ws_snap5m, f"A1:D{rows}", data_5m, user_entered=False)
+        if _es_corte_5m(ny):
+            data_5m = [["Ticker","N_prev","N_curr","ts"]]
+            for tk in sorted(n_map.keys()):
+                n_prev = cache_5m.get(tk, "")
+                n_curr = n_map[tk]
+                data_5m.append([tk, n_prev, n_curr, ts])
+                cache_5m[tk] = n_curr
+            _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
 
-    # 15m — cortes :00/:15/:30/:45
-    if _es_corte_15m(ny):
-        data_15 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_prev = cache_15m.get(tk, "")
-            n_curr = n_map[tk]
-            data_15.append([tk, n_prev, n_curr, ts])
-            cache_15m[tk] = n_curr
-        _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
+        if _es_corte_15m(ny):
+            data_15 = [["Ticker","N_prev","N_curr","ts"]]
+            for tk in sorted(n_map.keys()):
+                n_prev = cache_15m.get(tk, "")
+                n_curr = n_map[tk]
+                data_15.append([tk, n_prev, n_curr, ts])
+                cache_15m[tk] = n_curr
+            _update_values(ws_snap15, f"A1:D{len(data_15)}", data_15, user_entered=False)
 
-    # 1h — con ventana de gracia
-    if run_h1:
-        data_h1 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_curr = n_map[tk]
-            n_prev = cache_h1.get(tk, n_curr)
-            data_h1.append([tk, n_prev, n_curr, ts])
-            cache_h1[tk] = n_curr
-        _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
+        if run_h1:
+            data_h1 = [["Ticker","N_prev","N_curr","ts"]]
+            for tk in sorted(n_map.keys()):
+                n_curr = n_map[tk]
+                n_prev = cache_h1.get(tk, n_curr)
+                data_h1.append([tk, n_prev, n_curr, ts])
+                cache_h1[tk] = n_curr
+            _update_values(ws_snap1h, f"A1:D{len(data_h1)}", data_h1, user_entered=False)
 
-    # ======= SNAP 1d @ 08:00 NY =======
-    if actualiza_d0800 or need_seed_0800:
-        ts_now_d0800 = ny.strftime("%Y-%m-%d %H:%M:%S")
-        data_d0800 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_curr = n_map[tk]
-            n_prev = cache_d0800.get(tk, n_curr)   # si no hay previo, usa curr
-            data_d0800.append([tk, n_prev, n_curr, ts_now_d0800])
-            cache_d0800[tk] = n_curr
-        _update_values(ws_snap_d0800, f"A1:D{len(data_d0800)}", data_d0800, user_entered=False)
+        if actualiza_d0800 or need_seed_0800:
+            ts_now = ny.strftime("%Y-%m-%d %H:%M:%S")
+            data_d0800 = [["Ticker","N_prev","N_curr","ts"]]
+            for tk in sorted(n_map.keys()):
+                n_curr = n_map[tk]
+                n_prev = cache_d0800.get(tk, n_curr)
+                data_d0800.append([tk, n_prev, n_curr, ts_now])
+                cache_d0800[tk] = n_curr
+            _update_values(ws_snap_d0800, f"A1:D{len(data_d0800)}", data_d0800, user_entered=False)
 
-    # ======= SNAP 1d @ 15:50 NY =======
-    if actualiza_d1550 or need_seed_1550:
-        ts_now_d1550 = ny.strftime("%Y-%m-%d %H:%M:%S")
-        data_d1550 = [["Ticker","N_prev","N_curr","ts"]]
-        for tk in sorted(n_map.keys()):
-            n_curr = n_map[tk]
-            n_prev = cache_d1550.get(tk, n_curr)   # si no hay previo, usa curr
-            data_d1550.append([tk, n_prev, n_curr, ts_now_d1550])
-            cache_d1550[tk] = n_curr
-        _update_values(ws_snap_d1550, f"A1:D{len(data_d1550)}", data_d1550, user_entered=False)
-    # Persistir estado
-    _escribir_estado(ws_estado, estado_nuevo)
+        if actualiza_d1550 or need_seed_1550:
+            ts_now = ny.strftime("%Y-%m-%d %H:%M:%S")
+            data_d1550 = [["Ticker","N_prev","N_curr","ts"]]
+            for tk in sorted(n_map.keys()):
+                n_curr = n_map[tk]
+                n_prev = cache_d1550.get(tk, n_curr)
+                data_d1550.append([tk, n_prev, n_curr, ts_now])
+                cache_d1550[tk] = n_curr
+            _update_values(ws_snap_d1550, f"A1:D{len(data_d1550)}", data_d1550, user_entered=False)
 
-    # Retorno mapeo K
+        _escribir_estado(ws_estado, estado_nuevo)
+
     return {tk: "" for tk in filas_sorted}
 
 # ========= Runner de UNA corrida =========
@@ -1161,8 +1232,6 @@ def run_once(skip_oi: bool = False, force_write: bool = False):
     if not skip_oi:
         now_ny_base = _now_ny()
 
-        # ✅ Gate: solo ejecuta OI si estamos en corte real
-        # (o si se fuerza manualmente desde /run?force_write=1)
         if force_write or _is_any_cut(now_ny_base):
             l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
             l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
@@ -1192,19 +1261,38 @@ def run_once(skip_oi: bool = False, force_write: bool = False):
 
 # ========= Flask async guards =========
 def _acquire_lock():
+    if fcntl is None:
+        return open(LOCK_FILE, "a+")
     f = open(LOCK_FILE, "a+")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            f.seek(0); f.truncate(0); f.write(str(os.getpid())); f.flush()
-        except Exception: pass
+            f.seek(0)
+            f.truncate(0)
+            f.write(str(os.getpid()))
+            f.flush()
+        except Exception:
+            pass
         return f
     except BlockingIOError:
-        f.close(); return None
+        f.close()
+        return None
 
 def _authorized(req: request) -> bool:
-    if not OI_SECRET: return True
+    if not OI_SECRET:
+        return True
     return req.headers.get("X-Auth-Token", "") == OI_SECRET
+
+def _unlock_file(file_lock):
+    try:
+        if fcntl is not None:
+            fcntl.flock(file_lock, fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        file_lock.close()
+    except Exception:
+        pass
 
 def _run_guarded():
     file_lock = _acquire_lock()
@@ -1219,8 +1307,7 @@ def _run_guarded():
         log(f"[update] error: {repr(e)}", "ERROR")
         traceback.print_exc()
     finally:
-        fcntl.flock(file_lock, fcntl.LOCK_UN)
-        file_lock.close()
+        _unlock_file(file_lock)
         log(f"[update] thread end @ {datetime.utcnow().isoformat()}Z", "DEBUG")
 
 @app.get("/healthz")
@@ -1249,17 +1336,20 @@ def http_run():
         skip = request.args.get("skip_oi", "").strip().lower() in ("1", "true", "yes")
         force = request.args.get("force_write", "").strip().lower() in ("1", "true", "yes")
         print(f"➡️ [/run] inicio (skip_oi={skip}, force_write={force})", flush=True)
+
         file_lock = _acquire_lock()
         if not file_lock:
             msg = "ya hay una ejecución en curso"
             print(f"⏳ [/run] {msg}", flush=True)
             return jsonify({"ok": False, "running": True, "msg": msg}), 409
+
         try:
             result = run_once(skip_oi=skip, force_write=force)
-            print(f"✅ [/run] ok: {result}", flush=True)
+            print(f"✅ [/run] ok", flush=True)
             return jsonify(result), 200
         finally:
-            fcntl.flock(file_lock, fcntl.LOCK_UN); file_lock.close()
+            _unlock_file(file_lock)
+
     except Exception as e:
         traceback.print_exc()
         print(f"❌ [/run] error: {e}", flush=True)
@@ -1284,9 +1374,9 @@ def http_apply_access():
 
         acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
         return jsonify({"ok": True, **acc}), 200
+
     finally:
-        fcntl.flock(file_lock, fcntl.LOCK_UN)
-        file_lock.close()
-        
+        _unlock_file(file_lock)
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
