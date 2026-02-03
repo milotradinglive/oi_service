@@ -1320,7 +1320,7 @@ def run_once(skip_oi: bool = False, force_write: bool = False):
             except Exception:
                 pass
         else:
-            print(f"⏭️ No es corte (NY {now_ny_base:%H:%M:%S}) → se omite OI para evitar updates fuera de ventana.", flush=True)
+            log(f"No es corte (NY {now_ny_base:%H:%M:%S}) → se omite OI para evitar updates fuera de ventana.", "DEBUG")
 
     acc = procesar_autorizados_throttled(doc_main, accesos, main_url)
 
@@ -1390,7 +1390,7 @@ def _authorized(req: request) -> bool:
 def _run_guarded():
     file_lock = _acquire_lock()
     if not file_lock:
-        log("/update skipped: already running (lock)", "WARN")
+        log("/update skipped: already running (lock)", "INFO")
         return
     try:
         log("[update] start", "INFO")
