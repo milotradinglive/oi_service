@@ -304,12 +304,11 @@ def _es_snap_0800(dt=None, window_s=90):
     target = ny.replace(hour=8, minute=0, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
 
-
 def _es_snap_1550(dt=None, window_s=90):
     ny = dt or _now_ny()
-    target = ny.replace(hour=15, minute=50, second=0, microsecond=0)
+    # Corte diario pre-cierre: 15:56 NY
+    target = ny.replace(hour=15, minute=56, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
-
 
 def _is_any_cut(ny):
     return (
@@ -320,16 +319,29 @@ def _is_any_cut(ny):
         or _es_snap_1550(ny)
     )
 
+# =========================
+# RUN-ONCE-PER-BUCKET (anti "magia")
+# =========================
 
-def _should_run_h1_once(ws_meta, ny_now, scope_key: str):
-    key = f"last_h1_hour_iso__{scope_key}"
-    last_iso = _meta_read(ws_meta, key, "")
-    current_hour = _floor_hour(ny_now).isoformat()
-    if last_iso == current_hour:
+def _floor_to_minutes(dt, step_min: int):
+    # dt en NY, devuelve el bucket start (seg, micro=0)
+    m = (dt.minute // step_min) * step_min
+    return dt.replace(minute=m, second=0, microsecond=0)
+
+def _bucket_key_iso(dt, label: str):
+    # etiqueta + timestamp del bucket para guardar en META
+    return f"{label}__{dt.isoformat()}"
+
+def _should_run_bucket_once(ws_meta, meta_key: str, bucket_token: str) -> bool:
+    """
+    Devuelve True solo la PRIMERA vez que vemos este bucket_token.
+    Si lo vuelven a llamar 10 veces, ya devuelve False.
+    """
+    last = _meta_read(ws_meta, meta_key, "")
+    if last == bucket_token:
         return False
-    _meta_write(ws_meta, key, current_hour)
+    _meta_write(ws_meta, meta_key, bucket_token)
     return True
-
 
 # Memo de snapshots diarios realizados hoy (por hoja)
 DAILY_SNAP_DONE = {}  # {(sheet_title, 'YYYY-MM-DD'): True}
@@ -1052,12 +1064,49 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     cache_d0800 = _get_cache_for(ws_snap_d0800)
     cache_d1550 = _get_cache_for(ws_snap_d1550)
 
-    actualiza_d0800 = _es_snap_0800(ny)
-    actualiza_d1550 = _es_snap_1550(ny)
+    # =========================
+    # GATING REAL (run-once) por bucket y por hoja
+    # =========================
+    b5  = _floor_to_minutes(ny, 5)
+    b15 = _floor_to_minutes(ny, 15)
+    b1h = _floor_hour(ny)
+    hoy = ny.strftime("%Y-%m-%d")
 
-    run_h1 = _es_corte_1hConVentana(ny, 3) and _should_run_h1_once(ws_meta, ny, sheet_title)
+    run_5m = _es_corte_5m(ny) and _should_run_bucket_once(
+        ws_meta,
+        meta_key=f"last_run_5m_bucket__{sheet_title}",
+        bucket_token=_bucket_key_iso(b5, "5m"),
+    )
+
+    run_15m = _es_corte_15m(ny) and _should_run_bucket_once(
+        ws_meta,
+        meta_key=f"last_run_15m_bucket__{sheet_title}",
+        bucket_token=_bucket_key_iso(b15, "15m"),
+    )
+
+    run_h1 = _es_corte_1hConVentana(ny, 3) and _should_run_bucket_once(
+        ws_meta,
+        meta_key=f"last_run_1h_bucket__{sheet_title}",
+        bucket_token=_bucket_key_iso(b1h, "1h"),
+    )
+
+    # Daily 08:00 y 15:56 (una sola vez por día y por hoja)
+    actualiza_d0800 = _es_snap_0800(ny) and _should_run_bucket_once(
+        ws_meta,
+        meta_key=f"last_run_d0800_date__{sheet_title}",
+        bucket_token=hoy,
+    )
+
+    actualiza_d1550 = _es_snap_1550(ny) and _should_run_bucket_once(
+        ws_meta,
+        meta_key=f"last_run_d1550_date__{sheet_title}",
+        bucket_token=hoy,
+    )
+
+    # Seed si ya pasó la hora pero no existe snapshot en la hoja (solo para “primera vez del día”)
     need_seed_0800 = _after_time(8, 0, ny) and not _daily_snapshot_done_today(ws_snap_d0800)
-    need_seed_1550 = _after_time(15, 50, ny) and not _daily_snapshot_done_today(ws_snap_d1550)
+    need_seed_1550 = _after_time(15, 56, ny) and not _daily_snapshot_done_today(ws_snap_d1550)
+
 
     # Recolecta datos
     datos = []
@@ -1102,8 +1151,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     # Gate de escritura (NO escribir fuera de ventanas)
     hay_corte = (
-        _es_corte_5m(ny)
-        or _es_corte_15m(ny)
+        run_5m
+        or run_15m
         or run_h1
         or actualiza_d0800
         or actualiza_d1550
@@ -1119,7 +1168,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         "N (5m SNAP)","O (5m SNAP)","5m","5m %",
         "N (15m SNAP)","O (15m SNAP)","15m","15m %",
         "N (1h SNAP)","O (1h SNAP)","1h","1h %",
-        "N (1d 08:00)","N (1d 15:50)","día","día %"
+        "N (1d 08:00)","N (1d 15:56)","día","día %"
     ]]
     N_COLS = len(encabezado[0])
     END_COL = re.sub(r"\d+", "", rowcol_to_a1(1, N_COLS))
@@ -1247,7 +1296,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
         ts = ny.strftime("%Y-%m-%d %H:%M:%S")
 
-        if _es_corte_5m(ny):
+        if run_5m:
             data_5m = [["Ticker","N_prev","N_curr","ts"]]
             for tk in sorted(n_map.keys()):
                 n_prev = cache_5m.get(tk, "")
@@ -1256,7 +1305,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 cache_5m[tk] = n_curr
             _update_values(ws_snap5m, f"A1:D{len(data_5m)}", data_5m, user_entered=False)
 
-        if _es_corte_15m(ny):
+        if run_15m:
             data_15 = [["Ticker","N_prev","N_curr","ts"]]
             for tk in sorted(n_map.keys()):
                 n_prev = cache_15m.get(tk, "")
@@ -1409,6 +1458,19 @@ def update():
     if not _authorized(request):
         return jsonify({"error": "unauthorized"}), 401
 
+    ny = _now_ny()
+    force = request.args.get("force_write", "").strip().lower() in ("1", "true", "yes")
+
+    # Si NO es corte y NO force, NO dispares thread (anti-magia)
+    if (not force) and (not _is_any_cut(ny)):
+        return jsonify({
+            "accepted": False,
+            "skipped": True,
+            "reason": "not a cut",
+            "ny": ny.isoformat(),
+            "utc": datetime.utcnow().isoformat() + "Z"
+        }), 200
+
     print(
         "🌐 /update caller:",
         request.headers.get("X-Forwarded-For", request.remote_addr),
@@ -1419,8 +1481,7 @@ def update():
 
     t = threading.Thread(target=_run_guarded, daemon=True)
     t.start()
-    return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z"}), 202
-
+    return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z", "force": force}), 202
 
 @app.get("/run")
 def http_run():
