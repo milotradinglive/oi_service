@@ -81,6 +81,14 @@ ACCESS_SHEET_TITLE = os.getenv("ACCESS_SHEET_TITLE", "AUTORIZADOS")
 TRADIER_TOKEN = os.getenv("TRADIER_TOKEN", "")
 
 LOCK_FILE = "/tmp/oi-updater.lock"
+# ========= Umbrales CF (Δ en millones) =========
+# Se usan en _apply_cf_inflow_thresholds para pintar L/P/T/X
+MONEY_THR = {
+    "5m":  3.0,   # >= 3.0M verde / <= -3.0M rojo
+    "15m": 3.0,
+    "1h":  3.0,
+    "1d":  3.0,
+}
 
 # ========= Auth =========
 def make_gspread_and_creds():
@@ -969,10 +977,10 @@ def _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta):
     end_row = 2000
 
     cfg = [
-        (11, 5),   # L  5m Δ
-        (15, 10),  # P  15m Δ
-        (19, 15),  # T  1h Δ
-        (23, 20),  # X  día Δ
+        (11, MONEY_THR["5m"]),   # L
+        (15, MONEY_THR["15m"]),  # P
+        (19, MONEY_THR["1h"]),   # T
+        (23, MONEY_THR["1d"]),   # X
     ]
 
     req = []
@@ -1065,32 +1073,52 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     cache_d1550 = _get_cache_for(ws_snap_d1550)
 
     # =========================
-    # GATING REAL (run-once) por bucket y por hoja
+    # GATING + CASCADA LIMPIA (SIN "MAGIA")
+    # Objetivo:
+    # - En corte 5m:        corre 5m
+    # - En corte 15m:       corre 5m -> 15m
+    # - En corte 1h (:00):  corre 5m -> 15m -> 1h
+    # - Sin retocar el mismo snap 2 veces en una corrida
+    # - Run-once por bucket usando SOLO el nivel MÁS ALTO detectado
     # =========================
+
+    hoy = ny.strftime("%Y-%m-%d")
+
+    # Detecta cortes "crudos"
+    is_5m  = _es_corte_5m(ny)
+    is_15m = _es_corte_15m(ny)
+    is_1h  = _es_corte_1hConVentana(ny, 3)
+
+    # Buckets
     b5  = _floor_to_minutes(ny, 5)
     b15 = _floor_to_minutes(ny, 15)
     b1h = _floor_hour(ny)
-    hoy = ny.strftime("%Y-%m-%d")
 
-    run_5m = _es_corte_5m(ny) and _should_run_bucket_once(
-        ws_meta,
-        meta_key=f"last_run_5m_bucket__{sheet_title}",
-        bucket_token=_bucket_key_iso(b5, "5m"),
-    )
+    # Nivel del corte (prioridad): 1h > 15m > 5m
+    level = 0
+    level_token = None
+    level_key = None
 
-    run_15m = _es_corte_15m(ny) and _should_run_bucket_once(
-        ws_meta,
-        meta_key=f"last_run_15m_bucket__{sheet_title}",
-        bucket_token=_bucket_key_iso(b15, "15m"),
-    )
+    if is_1h:
+        level = 60
+        level_token = _bucket_key_iso(b1h, "1h")
+        level_key = f"last_run_level_bucket__{sheet_title}__1h"
+    elif is_15m:
+        level = 15
+        level_token = _bucket_key_iso(b15, "15m")
+        level_key = f"last_run_level_bucket__{sheet_title}__15m"
+    elif is_5m:
+        level = 5
+        level_token = _bucket_key_iso(b5, "5m")
+        level_key = f"last_run_level_bucket__{sheet_title}__5m"
 
-    run_h1 = _es_corte_1hConVentana(ny, 3) and _should_run_bucket_once(
-        ws_meta,
-        meta_key=f"last_run_1h_bucket__{sheet_title}",
-        bucket_token=_bucket_key_iso(b1h, "1h"),
-    )
+    # Run-once SOLO para el nivel que aplique (evita doble corrida si pegan /update varias veces)
+    if level > 0:
+        ok_level = _should_run_bucket_once(ws_meta, meta_key=level_key, bucket_token=level_token)
+        if not ok_level:
+            level = 0  # ya corrió este bucket -> no hacemos nada intradía en esta corrida
 
-    # Daily 08:00 y 15:56 (una sola vez por día y por hoja)
+    # Daily 08:00 y 15:56 (una sola vez por día y por hoja) — queda igual
     actualiza_d0800 = _es_snap_0800(ny) and _should_run_bucket_once(
         ws_meta,
         meta_key=f"last_run_d0800_date__{sheet_title}",
@@ -1102,6 +1130,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         meta_key=f"last_run_d1550_date__{sheet_title}",
         bucket_token=hoy,
     )
+
+    # Cascada limpia (lo que tú pediste)
+    run_5m  = (level >= 5)
+    run_15m = (level >= 15)
+    run_h1  = (level >= 60)
 
     # Seed si ya pasó la hora pero no existe snapshot en la hoja (solo para “primera vez del día”)
     need_seed_0800 = _after_time(8, 0, ny) and not _daily_snapshot_done_today(ws_snap_d0800)
@@ -1211,8 +1244,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         # 1h: R S T U
         R = f"=SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$C;3;FALSO);)"
         S_ = f"=LET(_p;SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);R{row};_p))"
-        T = f"=SI.ERROR(R{row}-S{row};0)"
-        U = f"=SI.ERROR(T{row}/MAX(ABS(S{row});0,000001);0)"
+        T = f"=SI.ERROR(R{row} - VALOR(S{row}); 0)"
+        U = f"=SI.ERROR(T{row} / MAX(ABS(VALOR(S{row})); 0,000001); 0)"
 
         # Día: V W X Y
         V = f"=SI.ERROR(BUSCARV(C{row};'{sd0800}'!$A:$C;3;FALSO);)"
