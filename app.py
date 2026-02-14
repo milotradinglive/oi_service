@@ -84,10 +84,10 @@ LOCK_FILE = "/tmp/oi-updater.lock"
 # ========= Umbrales CF (Δ en millones) =========
 # Se usan en _apply_cf_inflow_thresholds para pintar L/P/T/X
 MONEY_THR = {
-    "5m":  3.0,   # >= 3.0M verde / <= -3.0M rojo
-    "15m": 3.0,
-    "1h":  3.0,
-    "1d":  3.0,
+    "5m":  10.0,   # >= 3.0M verde / <= -3.0M rojo
+    "15m": 15.0,
+    "1h":  20.0,
+    "1d":  25.0,
 }
 
 # ========= Auth =========
