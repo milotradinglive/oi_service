@@ -7,6 +7,9 @@
 #   2) Rate limiter de lecturas (_safe_read) y escrituras (_safe_write).
 #   3) "ACCESOS" se procesa cada 30 min (tracked en hoja META) para evitar spam.
 # - Mantiene la lógica de cálculo y fórmulas H..Y, y snapshots: SNAP_5min__, SNAP__, SNAP_H1__, SNAP_d0800__, SNAP_d1550__.
+# - AJUSTE NUEVO:
+#   La parte diaria SOLO se actualiza en día hábil de mercado y dentro de la ventana RTH/pre-cierre.
+#   Si no hay mercado abierto o no es día hábil, la referencia diaria queda congelada.
 # ----------------------------------------------------------------------------------
 
 import os
@@ -15,8 +18,9 @@ import json
 import re
 import traceback
 import threading
+import calendar
 from collections import defaultdict as _dd, deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 try:
     import fcntl  # Linux/Render
@@ -81,10 +85,11 @@ ACCESS_SHEET_TITLE = os.getenv("ACCESS_SHEET_TITLE", "AUTORIZADOS")
 TRADIER_TOKEN = os.getenv("TRADIER_TOKEN", "")
 
 LOCK_FILE = "/tmp/oi-updater.lock"
+
 # ========= Umbrales CF (Δ en millones) =========
 # Se usan en _apply_cf_inflow_thresholds para pintar L/P/T/X
 MONEY_THR = {
-    "5m":  10.0,   # >= 3.0M verde / <= -3.0M rojo
+    "5m":  10.0,
     "15m": 15.0,
     "1h":  20.0,
     "1d":  25.0,
@@ -188,7 +193,6 @@ READ_LIMITER = ReadRateLimiter(max_reads_per_min=30)
 
 
 def _safe_read(call):
-    """Milo — lectura con rate limit y backoff (anti-429)."""
     READ_LIMITER.wait()
     return _retry(call)
 
@@ -220,11 +224,6 @@ def _safe_write(call):
 
 
 def _update_values(ws, a1_range, values, user_entered=True):
-    """
-    Milo — update de valores (1 llamada HTTP), con control anti-429.
-    - user_entered=True  -> USER_ENTERED
-    - user_entered=False -> RAW (útil para snapshots/meta)
-    """
     opt = "USER_ENTERED" if user_entered else "RAW"
 
     def _do():
@@ -236,10 +235,6 @@ def _update_values(ws, a1_range, values, user_entered=True):
 
 
 def _batch_update_ranges(ws, updates, user_entered=True):
-    """
-    updates: [{"range":"A2","values":[["x"]]}, ...]
-    -> 1 llamada HTTP por batch (worksheet-scope)
-    """
     if not updates:
         return
 
@@ -273,7 +268,7 @@ def fmt_entero_miles(x):
     return s.replace(",", ".")
 
 
-# ========= Hora NY / cortes =========
+# ========= Hora NY / mercado =========
 NY_TZ = pytz.timezone("America/New_York")
 
 
@@ -281,26 +276,123 @@ def _now_ny():
     return datetime.now(timezone.utc).astimezone(NY_TZ)
 
 
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    first_day = date(year, month, 1)
+    offset = (weekday - first_day.weekday()) % 7
+    day_num = 1 + offset + (n - 1) * 7
+    return date(year, month, day_num)
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    last_dom = calendar.monthrange(year, month)[1]
+    d = date(year, month, last_dom)
+    while d.weekday() != weekday:
+        d -= timedelta(days=1)
+    return d
+
+
+def _observed_if_weekend(d: date) -> date:
+    if d.weekday() == 5:  # sábado
+        return d - timedelta(days=1)
+    if d.weekday() == 6:  # domingo
+        return d + timedelta(days=1)
+    return d
+
+
+def _easter_date(year: int) -> date:
+    # Algoritmo Gregorian Meeus/Jones/Butcher
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _nyse_holidays(year: int):
+    new_years = _observed_if_weekend(date(year, 1, 1))
+    mlk = _nth_weekday_of_month(year, 1, 0, 3)          # tercer lunes enero
+    presidents = _nth_weekday_of_month(year, 2, 0, 3)   # tercer lunes febrero
+    good_friday = _easter_date(year) - timedelta(days=2)
+    memorial = _last_weekday_of_month(year, 5, 0)       # último lunes mayo
+    juneteenth = _observed_if_weekend(date(year, 6, 19))
+    independence = _observed_if_weekend(date(year, 7, 4))
+    labor = _nth_weekday_of_month(year, 9, 0, 1)        # primer lunes septiembre
+    thanksgiving = _nth_weekday_of_month(year, 11, 3, 4)  # cuarto jueves noviembre
+    christmas = _observed_if_weekend(date(year, 12, 25))
+
+    return {
+        new_years,
+        mlk,
+        presidents,
+        good_friday,
+        memorial,
+        juneteenth,
+        independence,
+        labor,
+        thanksgiving,
+        christmas,
+    }
+
+
+def _is_trading_day(dt=None):
+    ny = dt or _now_ny()
+    d = ny.date()
+    if ny.weekday() >= 5:
+        return False
+    return d not in _nyse_holidays(d.year)
+
+
+def _is_rth_open(dt=None):
+    ny = dt or _now_ny()
+    if not _is_trading_day(ny):
+        return False
+    hm = (ny.hour, ny.minute)
+    return (9, 30) <= hm < (16, 0)
+
+
+def _is_daily_window_allowed(dt=None):
+    """
+    La parte diaria solo se permite en:
+    - día hábil de mercado
+    - ventana 08:00 NY para seed diario
+    - ventana 15:56 NY para snapshot pre-cierre
+    """
+    ny = dt or _now_ny()
+    if not _is_trading_day(ny):
+        return False
+    hm = (ny.hour, ny.minute)
+    return hm >= (8, 0)
+
+
 def _es_corte_5m(dt=None):
     ny = dt or _now_ny()
-    return (ny.minute % 5) == 0
+    return _is_rth_open(ny) and ((ny.minute % 5) == 0)
 
 
 def _es_corte_15m(dt=None):
     ny = dt or _now_ny()
-    return (ny.minute % 15) == 0
+    return _is_rth_open(ny) and ((ny.minute % 15) == 0)
 
 
 def _es_corte_1hConVentana(dt=None, ventana_min=3):
     ny = dt or _now_ny()
-    return ny.minute < ventana_min  # true de :00 a :02 NY
+    return _is_rth_open(ny) and (ny.minute < ventana_min)  # true de :00 a :02 NY
 
 
 def _floor_hour(dt):
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
-# ---- helper: after time NY ----
 def _after_time(h, m, dt=None):
     ny = dt or _now_ny()
     return (ny.hour, ny.minute) >= (h, m)
@@ -308,14 +400,19 @@ def _after_time(h, m, dt=None):
 
 def _es_snap_0800(dt=None, window_s=90):
     ny = dt or _now_ny()
+    if not _is_trading_day(ny):
+        return False
     target = ny.replace(hour=8, minute=0, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
 
+
 def _es_snap_1550(dt=None, window_s=90):
     ny = dt or _now_ny()
-    # Corte diario pre-cierre: 15:56 NY
+    if not _is_trading_day(ny):
+        return False
     target = ny.replace(hour=15, minute=56, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
+
 
 def _is_any_cut(ny):
     return (
@@ -326,43 +423,41 @@ def _is_any_cut(ny):
         or _es_snap_1550(ny)
     )
 
+
 # =========================
 # RUN-ONCE-PER-BUCKET (anti "magia")
 # =========================
 
 def _floor_to_minutes(dt, step_min: int):
-    # dt en NY, devuelve el bucket start (seg, micro=0)
     m = (dt.minute // step_min) * step_min
     return dt.replace(minute=m, second=0, microsecond=0)
 
+
 def _bucket_key_iso(dt, label: str):
-    # etiqueta + timestamp del bucket para guardar en META
     return f"{label}__{dt.isoformat()}"
 
+
 def _should_run_bucket_once(ws_meta, meta_key: str, bucket_token: str) -> bool:
-    """
-    Devuelve True solo la PRIMERA vez que vemos este bucket_token.
-    Si lo vuelven a llamar 10 veces, ya devuelve False.
-    """
     last = _meta_read(ws_meta, meta_key, "")
     if last == bucket_token:
         return False
     _meta_write(ws_meta, meta_key, bucket_token)
     return True
 
-# Memo de snapshots diarios realizados hoy (por hoja)
-DAILY_SNAP_DONE = {}  # {(sheet_title, 'YYYY-MM-DD'): True}
+
+# Memo de snapshots diarios realizados hoy (por hoja y tipo)
+DAILY_SNAP_DONE = {}  # {(sheet_title, tag, 'YYYY-MM-DD'): True}
 
 # Memo: cuántas filas escribimos la última vez por hoja ESTADO__
-ESTADO_LAST_ROWS = {}  # {ws_title: last_rows_written}
+ESTADO_LAST_ROWS = {}
 
 # Memo: cuántas filas escribimos la última vez por hoja principal (tabla)
-TABLA_LAST_ROWS = {}  # {sheet_title: last_last_row_written}
+TABLA_LAST_ROWS = {}
 
 
-def _daily_snapshot_done_today(ws_snap):
+def _daily_snapshot_done_today(ws_snap, tag=None):
     hoy = _now_ny().strftime("%Y-%m-%d")
-    key = (ws_snap.title, hoy)
+    key = (ws_snap.title, tag or ws_snap.title, hoy)
     if DAILY_SNAP_DONE.get(key) is True:
         return True
     try:
@@ -459,7 +554,6 @@ def _ensure_snapshot_sheet(doc, nombre_snap: str):
 
 
 # ========= SNAPSHOT CACHE (memoria) =========
-# Mapa: sheet_title -> { ticker: last_N_curr }
 CACHE_SNAP = {}
 
 
@@ -486,9 +580,9 @@ def _get_cache_for(ws_snap):
     return CACHE_SNAP[key]
 
 
-# ========= META helpers (para throttling ACCESOS y flags de CF) =========
-META_CACHE = {}      # {ws_title: {key: value}}
-META_ROW_INDEX = {}  # {ws_title: {key: row_number}}
+# ========= META helpers =========
+META_CACHE = {}
+META_ROW_INDEX = {}
 
 
 def _meta_get_map(ws_meta):
@@ -515,7 +609,6 @@ def _meta_write(ws_meta, key, val):
     d = _meta_get_map(ws_meta)
     idx_map = META_ROW_INDEX[ws_meta.title]
 
-    # harden: si se desincroniza, recarga
     if (key in d) != (key in idx_map):
         META_CACHE.pop(ws_meta.title, None)
         META_ROW_INDEX.pop(ws_meta.title, None)
@@ -783,7 +876,7 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
 
     hoja_aut = accesos_doc.worksheet(ACCESS_SHEET_TITLE)
 
-    pending = []  # [{"range":"A2","values":[["x"]]}, ...]
+    pending = []
 
     def _set_cell(r, c, v):
         pending.append({"range": rowcol_to_a1(r, c), "values": [[v]]})
@@ -844,7 +937,7 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
                         else:
                             raise
                 _set_cell(idx, cols["perm_id"], "")
-                _set_cell(idx, cols["nota"], "Revocado (manual o ya no existía)")
+                _set_cell(idx, cols["nota"], "Revocado")
                 by_email.pop(email, None)
                 revocados += 1
             except Exception as e:
@@ -866,7 +959,6 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
             except Exception as e:
                 _set_cell(idx, cols["nota"], f"ERROR grant: {e}")
             continue
-
         if estado == "ACTIVO":
             if not perm_id and email in by_email:
                 pid = by_email[email]["id"]
@@ -900,6 +992,7 @@ def procesar_autorizados_throttled(doc_main, accesos_doc, main_file_url):
 
     _flush_pending()
     _meta_write(ws_meta, "last_accesses_check_iso", datetime.utcnow().replace(microsecond=0).isoformat() + "Z")
+
     print(f"✅ AUTORIZADOS (drive) → activados: {activados} | sincronizados: {sincronizados} | revocados: {revocados}", flush=True)
     return {"activados": activados, "revocados": revocados, "skipped": False}
 
@@ -1034,17 +1127,15 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     ws_meta = _ensure_sheet_generic(doc, "META", rows=50, cols=2)
 
-    # 1) Limpiar CF viejo de % (M,Q,U,Y) — 1 sola vez por hoja
     _reset_cf_for_columns(
         ws,
         start_row_idx=2,
         end_row_idx=2000,
-        cols_0idx=[12, 16, 20, 24],  # M, Q, U, Y (0-index)
+        cols_0idx=[12, 16, 20, 24],
         ws_meta=ws_meta,
         sheet_title=sheet_title,
     )
 
-    # 2) Aplicar CF nuevo por Δ en L/P/T/X — 1 sola vez por hoja
     _apply_cf_inflow_thresholds(ws, sheet_title, ws_meta)
 
     ny = now_ny_base or _now_ny()
@@ -1052,13 +1143,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     hora_txt = ny.strftime("%H:%M:%S")
     log(f"Actualizando: {sheet_title} (vto #{posicion_fecha+1}) NY {fecha_txt} {hora_txt}", "INFO")
 
-    # Estado previo
     nombre_estado = f"ESTADO__{sheet_title}"
     ws_estado = _ensure_estado_sheet(doc, nombre_estado)
     estado_prev = _leer_estado(ws_estado)
     estado_nuevo = {}
 
-    # Snapshots
     ws_snap5m = _ensure_snapshot_sheet(doc, f"SNAP_5min__{sheet_title}")
     ws_snap15 = _ensure_snapshot_sheet(doc, f"SNAP__{sheet_title}")
     ws_snap1h = _ensure_snapshot_sheet(doc, f"SNAP_H1__{sheet_title}")
@@ -1071,29 +1160,16 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
     cache_d0800 = _get_cache_for(ws_snap_d0800)
     cache_d1550 = _get_cache_for(ws_snap_d1550)
 
-    # =========================
-    # GATING + CASCADA LIMPIA (SIN "MAGIA")
-    # Objetivo:
-    # - En corte 5m:        corre 5m
-    # - En corte 15m:       corre 5m -> 15m
-    # - En corte 1h (:00):  corre 5m -> 15m -> 1h
-    # - Sin retocar el mismo snap 2 veces en una corrida
-    # - Run-once por bucket usando SOLO el nivel MÁS ALTO detectado
-    # =========================
-
     hoy = ny.strftime("%Y-%m-%d")
 
-    # Detecta cortes "crudos"
     is_5m  = _es_corte_5m(ny)
     is_15m = _es_corte_15m(ny)
     is_1h  = _es_corte_1hConVentana(ny, 3)
 
-    # Buckets
     b5  = _floor_to_minutes(ny, 5)
     b15 = _floor_to_minutes(ny, 15)
     b1h = _floor_hour(ny)
 
-    # Nivel del corte (prioridad): 1h > 15m > 5m
     level = 0
     level_token = None
     level_key = None
@@ -1111,13 +1187,11 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         level_token = _bucket_key_iso(b5, "5m")
         level_key = f"last_run_level_bucket__{sheet_title}__5m"
 
-    # Run-once SOLO para el nivel que aplique (evita doble corrida si pegan /update varias veces)
     if level > 0:
         ok_level = _should_run_bucket_once(ws_meta, meta_key=level_key, bucket_token=level_token)
         if not ok_level:
-            level = 0  # ya corrió este bucket -> no hacemos nada intradía en esta corrida
+            level = 0
 
-    # Daily 08:00 y 15:56 (una sola vez por día y por hoja) — queda igual
     actualiza_d0800 = _es_snap_0800(ny) and _should_run_bucket_once(
         ws_meta,
         meta_key=f"last_run_d0800_date__{sheet_title}",
@@ -1130,17 +1204,23 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         bucket_token=hoy,
     )
 
-    # Cascada limpia (lo que tú pediste)
     run_5m  = (level >= 5)
     run_15m = (level >= 15)
     run_h1  = (level >= 60)
 
-    # Seed si ya pasó la hora pero no existe snapshot en la hoja (solo para “primera vez del día”)
-    need_seed_0800 = _after_time(8, 0, ny) and not _daily_snapshot_done_today(ws_snap_d0800)
-    need_seed_1550 = _after_time(15, 56, ny) and not _daily_snapshot_done_today(ws_snap_d1550)
+    hm = (ny.hour, ny.minute)
 
+    need_seed_0800 = (
+        _is_trading_day(ny)
+        and ((8, 0) <= hm < (9, 30))
+        and not _daily_snapshot_done_today(ws_snap_d0800, "d0800")
+    )
 
-    # Recolecta datos
+    need_seed_1550 = (
+        _is_trading_day(ny)
+        and ((15, 56) <= hm < (16, 0))
+        and not _daily_snapshot_done_today(ws_snap_d1550, "d1550")
+    )
     datos = []
     for tk in TICKERS:
         oi_c, oi_p, m_c, m_p, v_c, v_p, exp = obtener_dinero(tk, posicion_fecha)
@@ -1148,7 +1228,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         datos.append([tk, "PUT",  m_p, v_p, exp, oi_p])
         time.sleep(0.15)
 
-    # Agregado por ticker
     agg = _dd(lambda: {"CALL": [0.0, 0], "PUT": [0.0, 0], "EXP": None})
     for tk, side, m_usd, vol, exp, _oi in datos:
         if not agg[tk]["EXP"] and exp:
@@ -1156,7 +1235,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         agg[tk][side][0] += m_usd
         agg[tk][side][1] += vol
 
-    # Métricas por ticker y estado
     stats = {}
     for tk in agg.keys():
         m_call, v_call = agg[tk]["CALL"]
@@ -1181,7 +1259,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     filas_sorted = sorted(stats.keys(), key=lambda t: stats[t]["val_h"], reverse=True)
 
-    # Gate de escritura (NO escribir fuera de ventanas)
     hay_corte = (
         run_5m
         or run_15m
@@ -1224,29 +1301,24 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
         v_call = agg[tk]["CALL"][1]
         v_put = agg[tk]["PUT"][1]
 
-        # H / I
         H = f"=SI.ERROR((D{row}-E{row})/MAX(D{row};E{row});0)"
         I = f"=SI.ERROR((F{row}-G{row})/MAX(F{row};G{row});0)"
 
-        # 5m: J K L M
         J = f"=SI.ERROR(BUSCARV(C{row};'{s5}'!$A:$C;3;FALSO);)"
         K = f"=SI.ERROR(BUSCARV(C{row};'{s5}'!$A:$B;2;FALSO);)"
         L = f"=SI.ERROR(J{row}-K{row};0)"
         M = f"=SI.ERROR(L{row}/MAX(ABS(K{row});0,000001);0)"
 
-        # 15m: N O P Q
         N = f"=SI.ERROR(BUSCARV(C{row};'{s15}'!$A:$C;3;FALSO);)"
         O = f"=SI.ERROR(BUSCARV(C{row};'{s15}'!$A:$B;2;FALSO);)"
         P = f"=SI.ERROR(N{row}-O{row};0)"
         Q = f"=SI.ERROR(P{row}/MAX(ABS(O{row});0,000001);0)"
 
-        # 1h: R S T U
         R = f"=SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$C;3;FALSO);)"
         S_ = f"=LET(_p;SI.ERROR(BUSCARV(C{row};'{s1h}'!$A:$B;2;FALSO););SI(ESBLANCO(_p);R{row};_p))"
         T = f"=SI.ERROR(R{row} - VALOR(S{row}); 0)"
         U = f"=SI.ERROR(T{row} / MAX(ABS(VALOR(S{row})); 0,000001); 0)"
 
-        # Día: V W X Y
         V = f"=SI.ERROR(BUSCARV(C{row};'{sd0800}'!$A:$C;3;FALSO);)"
         W = f"=SI.ERROR(BUSCARV(C{row};'{sd1550}'!$A:$C;3;FALSO);)"
         X = f"=SI.ERROR(W{row}-V{row};0)"
@@ -1263,9 +1335,8 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
             V, W, X, Y
         ])
 
-    # ====== ESCRITURA TABLA + FORMATOS + SNAPSHOTS (SOLO SI hay_corte) ======
     if hay_corte and tabla:
-        new_last_row = len(tabla) + 2  # datos empiezan en A3, termina en fila len(tabla)+2
+        new_last_row = len(tabla) + 2
         prev_last_row = TABLA_LAST_ROWS.get(sheet_title, 0)
 
         _update_values(ws, f"A3:{END_COL}{new_last_row}", tabla, user_entered=True)
@@ -1276,14 +1347,12 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
         TABLA_LAST_ROWS[sheet_title] = new_last_row
 
-        # Formatos %
         sheet_id = ws.id
         start_row = 2
         total_rows = len(tabla)
         req = []
 
-        # H,I -> percent 0.0%
-        for col in (7, 8):  # H=7, I=8 (0-index)
+        for col in (7, 8):
             req.append({
                 "repeatCell": {
                     "range": {
@@ -1298,8 +1367,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 }
             })
 
-        # M,Q,U,Y -> percent 0%
-        for col in (12, 16, 20, 24):  # M,Q,U,Y (0-index)
+        for col in (12, 16, 20, 24):
             req.append({
                 "repeatCell": {
                     "range": {
@@ -1319,7 +1387,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
                 _safe_write(lambda: ws.spreadsheet.batch_update({"requests": req}))
                 time.sleep(0.2)
 
-        # ====== SNAPSHOTS (solo escrituras usando cache) ======
         n_map = {}
         for tk in filas_sorted:
             m_call = agg[tk]["CALL"][0]
@@ -1377,7 +1444,6 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
         _escribir_estado(ws_estado, estado_nuevo)
 
-    # retorno consistente (lo que estabas usando para logs)
     return {tk: "" for tk in filas_sorted}
 
 
@@ -1391,7 +1457,6 @@ def run_once(skip_oi: bool = False, force_write: bool = False):
     if not skip_oi:
         now_ny_base = _now_ny()
 
-        # Gate: solo ejecuta OI si estamos en corte real (o force_write)
         if force_write or _is_any_cut(now_ny_base):
             l_vto1 = actualizar_hoja(doc_main, "Semana actual", posicion_fecha=0, now_ny_base=now_ny_base)
             l_vto2 = actualizar_hoja(doc_main, "Semana siguiente", posicion_fecha=1, now_ny_base=now_ny_base)
@@ -1422,14 +1487,9 @@ def run_once(skip_oi: bool = False, force_write: bool = False):
 
 # ========= Flask async guards =========
 def _acquire_lock():
-    """
-    Lock por archivo:
-    - Linux/Render: fcntl.flock exclusivo no bloqueante.
-    - Windows: fallback sin exclusión real (no rompe).
-    """
     f = open(LOCK_FILE, "a+")
     if fcntl is None:
-        return f  # fallback
+        return f
 
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1493,7 +1553,6 @@ def update():
     ny = _now_ny()
     force = request.args.get("force_write", "").strip().lower() in ("1", "true", "yes")
 
-    # Si NO es corte y NO force, NO dispares thread (anti-magia)
     if (not force) and (not _is_any_cut(ny)):
         return jsonify({
             "accepted": False,
@@ -1514,6 +1573,7 @@ def update():
     t = threading.Thread(target=_run_guarded, daemon=True)
     t.start()
     return jsonify({"accepted": True, "started_at": datetime.utcnow().isoformat() + "Z", "force": force}), 202
+
 
 @app.get("/run")
 def http_run():
