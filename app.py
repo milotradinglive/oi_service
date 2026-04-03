@@ -105,10 +105,10 @@ drive = build("drive", "v3", credentials=google_api_creds)
 
 # ========= Datos base =========
 TICKERS = [
-    "AAPL","AMD","AMZN","BA","BAC","DIA","GLD","GOOG","IBM","INTC",
-    "IWM","JPM","META","MRNA","MSFT","NFLX","NVDA","ORCL","UBER",
+    "AAPL","AMD","AMZN","BAC","DIA","GLD","GOOG","IBM","INTC",
+    "IWM","JPM","META","MSFT","NFLX","NVDA","ORCL","UBER",
     "PLTR","QQQ","SLV","SPY","TNA","TSLA","USO","WFC","WMT","XOM",
-    "CVX","PYPL",
+    "CVX",
 ]
 
 # ========= Tradier =========
