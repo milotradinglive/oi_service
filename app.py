@@ -373,30 +373,24 @@ def _is_daily_window_allowed(dt=None):
     hm = (ny.hour, ny.minute)
     return hm >= (8, 0)
 
-
-def _es_corte_5m(dt=None):
+def _es_corte_5m(dt=None, ventana_min=2):
     ny = dt or _now_ny()
-    return _is_rth_open(ny) and ((ny.minute % 5) == 0)
+    return _is_rth_open(ny) and ((ny.minute % 5) < ventana_min)
 
-
-def _es_corte_15m(dt=None):
+def _es_corte_15m(dt=None, ventana_min=2):
     ny = dt or _now_ny()
-    return _is_rth_open(ny) and ((ny.minute % 15) == 0)
-
+    return _is_rth_open(ny) and ((ny.minute % 15) < ventana_min)
 
 def _es_corte_1hConVentana(dt=None, ventana_min=3):
     ny = dt or _now_ny()
-    return _is_rth_open(ny) and (ny.minute < ventana_min)  # true de :00 a :02 NY
-
+    return _is_rth_open(ny) and (ny.minute < ventana_min)
 
 def _floor_hour(dt):
     return dt.replace(minute=0, second=0, microsecond=0)
 
-
 def _after_time(h, m, dt=None):
     ny = dt or _now_ny()
     return (ny.hour, ny.minute) >= (h, m)
-
 
 def _es_snap_0800(dt=None, window_s=90):
     ny = dt or _now_ny()
@@ -405,14 +399,12 @@ def _es_snap_0800(dt=None, window_s=90):
     target = ny.replace(hour=8, minute=0, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
 
-
 def _es_snap_1550(dt=None, window_s=90):
     ny = dt or _now_ny()
     if not _is_trading_day(ny):
         return False
     target = ny.replace(hour=15, minute=56, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
-
 
 def _is_any_cut(ny):
     return (
@@ -423,7 +415,6 @@ def _is_any_cut(ny):
         or _es_snap_1550(ny)
     )
 
-
 # =========================
 # RUN-ONCE-PER-BUCKET (anti "magia")
 # =========================
@@ -432,10 +423,8 @@ def _floor_to_minutes(dt, step_min: int):
     m = (dt.minute // step_min) * step_min
     return dt.replace(minute=m, second=0, microsecond=0)
 
-
 def _bucket_key_iso(dt, label: str):
     return f"{label}__{dt.isoformat()}"
-
 
 def _should_run_bucket_once(ws_meta, meta_key: str, bucket_token: str) -> bool:
     last = _meta_read(ws_meta, meta_key, "")
@@ -443,7 +432,6 @@ def _should_run_bucket_once(ws_meta, meta_key: str, bucket_token: str) -> bool:
         return False
     _meta_write(ws_meta, meta_key, bucket_token)
     return True
-
 
 # Memo de snapshots diarios realizados hoy (por hoja y tipo)
 DAILY_SNAP_DONE = {}  # {(sheet_title, tag, 'YYYY-MM-DD'): True}
@@ -453,7 +441,6 @@ ESTADO_LAST_ROWS = {}
 
 # Memo: cuántas filas escribimos la última vez por hoja principal (tabla)
 TABLA_LAST_ROWS = {}
-
 
 def _daily_snapshot_done_today(ws_snap, tag=None):
     hoy = _now_ny().strftime("%Y-%m-%d")
@@ -469,7 +456,6 @@ def _daily_snapshot_done_today(ws_snap, tag=None):
     except Exception:
         return False
 
-
 # ========= Estado por hoja (colores / L) =========
 def _ensure_estado_sheet(doc, nombre_estado: str):
     try:
@@ -483,7 +469,6 @@ def _ensure_estado_sheet(doc, nombre_estado: str):
     if not headers or len(headers[0]) < 6:
         _update_values(ws, "A1", [["Ticker","ColorOI","ColorVol","EstadoL","PrevH","PrevI"]], user_entered=False)
     return ws
-
 
 def _leer_estado(ws_estado):
     rows = _safe_read(lambda: ws_estado.get_all_values())
@@ -511,7 +496,6 @@ def _leer_estado(ws_estado):
 
         d[t] = (c_oi, c_v, e_l, prev_h, prev_i)
     return d
-
 
 def _escribir_estado(ws_estado, mapa):
     data = [["Ticker","ColorOI","ColorVol","EstadoL","PrevH","PrevI"]]
