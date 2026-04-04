@@ -375,16 +375,15 @@ def _is_daily_window_allowed(dt=None):
 
 def _es_corte_5m(dt=None, ventana_min=2):
     ny = dt or _now_ny()
-    return _is_rth_open(ny) and ((ny.minute % 5) < ventana_min)
+    return ((ny.minute % 5) < ventana_min)
 
 def _es_corte_15m(dt=None, ventana_min=2):
     ny = dt or _now_ny()
-    return _is_rth_open(ny) and ((ny.minute % 15) < ventana_min)
+    return ((ny.minute % 15) < ventana_min)
 
 def _es_corte_1hConVentana(dt=None, ventana_min=3):
     ny = dt or _now_ny()
-    return _is_rth_open(ny) and (ny.minute < ventana_min)
-
+    return (ny.minute < ventana_min)
 def _floor_hour(dt):
     return dt.replace(minute=0, second=0, microsecond=0)
 
