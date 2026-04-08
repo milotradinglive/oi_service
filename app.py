@@ -1195,13 +1195,13 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     need_seed_0800 = (
         _is_trading_day(ny)
-        and ((8, 0) <= hm < (9, 30))
+        and _after_time(8, 0, ny)
         and not _daily_snapshot_done_today(ws_snap_d0800, "d0800")
     )
 
     need_seed_1550 = (
         _is_trading_day(ny)
-        and ((15, 56) <= hm < (16, 0))
+        and _after_time(15, 56, ny)
         and not _daily_snapshot_done_today(ws_snap_d1550, "d1550")
     )
     datos = []
