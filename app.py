@@ -398,12 +398,14 @@ def _es_snap_0800(dt=None, window_s=90):
     target = ny.replace(hour=8, minute=0, second=0, microsecond=0)
     return 0 <= (ny - target).total_seconds() < window_s
 
-def _es_snap_1550(dt=None, window_s=90):
+def _es_snap_1550(dt=None, window_s=240):
     ny = dt or _now_ny()
+
     if not _is_trading_day(ny):
         return False
-    target = ny.replace(hour=15, minute=56, second=0, microsecond=0)
-    return 0 <= (ny - target).total_seconds() < window_s
+
+    # Ventana válida: 15:56:00 a 15:59:59 NY
+    return ny.hour == 15 and 56 <= ny.minute <= 59
 
 def _is_any_cut(ny):
     return (
@@ -1201,7 +1203,7 @@ def actualizar_hoja(doc, sheet_title, posicion_fecha, now_ny_base=None):
 
     need_seed_1550 = (
         _is_trading_day(ny)
-        and _after_time(15, 56, ny)
+        and (ny.hour == 15 and 56 <= ny.minute <= 59)
         and not _daily_snapshot_done_today(ws_snap_d1550, "d1550")
     )
     datos = []
